@@ -1025,6 +1025,9 @@
               <button class="w-full text-left px-4 py-2 hover:bg-slate-700 text-teal-100 flex items-center gap-3" onclick="closeDateiMenu(); triggerImportNina()">
                 <span>⬇️</span> Austausch-Datei laden…
               </button>
+              <button class="w-full text-left px-4 py-2 hover:bg-slate-700 text-teal-100 flex items-center gap-3" onclick="closeDateiMenu(); triggerImportFigScenes()">
+                <span>📥</span> Figuren &amp; Szenen (Excel/CSV)…
+              </button>
               <button class="w-full text-left px-4 py-2 hover:bg-slate-700 text-teal-100 flex items-center gap-3" onclick="closeDateiMenu(); triggerImportBackup()">
                 <span>💾</span> Backup wiederherstellen…
               </button>
@@ -1469,7 +1472,7 @@
     }
     function closeModal() { state.showImportModal = null; state.editingItem = null; state.editingType = null; pendingImportData = null; pendingImportType = null; render(); }
     function showImportModal(type) { state.showImportModal = type; render(); }
-    function editItem(id, type) { const keyMap = { probedaten: KEYS.probedaten, ensemble: KEYS.ensemble, kuenstlerischesTeam: KEYS.kuenstlerischesTeam, teamVerfuegbarkeit: KEYS.teamVerfuegbarkeit, figuren: KEYS.figuren, zuordnungen: KEYS.zuordnungen, szenen: KEYS.szenen, absenzen: KEYS.absenzen }; const data = getData(keyMap[type]); const item = data.find(d => d.id === id); if (item) { if (item._readOnly) { alert('🔒 Dieses Element wurde aus ' + (item._source || 'einer anderen App') + ' importiert und kann in Propla nicht bearbeitet werden.'); return; } state.editingItem = { ...item }; state.editingType = type; render(); } }
+    function editItem(id, type) { const keyMap = { probedaten: KEYS.probedaten, ensemble: KEYS.ensemble, kuenstlerischesTeam: KEYS.kuenstlerischesTeam, teamVerfuegbarkeit: KEYS.teamVerfuegbarkeit, figuren: KEYS.figuren, zuordnungen: KEYS.zuordnungen, szenen: KEYS.szenen, absenzen: KEYS.absenzen }; const data = getData(keyMap[type]); const item = data.find(d => d.id === id); if (item) { if (false) { /* Sicherung entfernt */ } state.editingItem = { ...item }; state.editingType = type; render(); } }
     async function saveEdit() { 
       if (!state.editingItem || !state.editingType) return; 
       const keyMap = { probedaten: KEYS.probedaten, ensemble: KEYS.ensemble, kuenstlerischesTeam: KEYS.kuenstlerischesTeam, teamVerfuegbarkeit: KEYS.teamVerfuegbarkeit, figuren: KEYS.figuren, zuordnungen: KEYS.zuordnungen, szenen: KEYS.szenen, absenzen: KEYS.absenzen }; 
@@ -2492,6 +2495,161 @@
       if (menu) menu.classList.add('hidden');
     }
     function neuesProjektAnlegen() { showProjektAuswahl(); }
+        // ===== NEU: Figuren & Szenen aus Excel/CSV importieren (mit Änderungs-Vorschau) =====
+    var pendingFigDiff = null;
+    function migrateUnlock() {
+      try {
+        ['figuren','szenen'].forEach(function(k){
+          var key = KEYS[k]; if(!key) return;
+          var arr = getData(key); var changed=false;
+          arr.forEach(function(it){ if(it && it._readOnly){ it._readOnly=false; changed=true; } });
+          if(changed) setData(key, arr);
+        });
+      } catch(e){}
+    }
+    function normalizeProbeDates(arr) {
+      if(!Array.isArray(arr)) return arr;
+      return arr.map(function(p){
+        if(!p || typeof p.datum !== 'string' || p.datum.indexOf('/') < 0) return p;
+        var parts = p.datum.split('/'); if(parts.length < 3) return p;
+        var a = parseInt(parts[0],10), b = parseInt(parts[1],10);
+        var y = parts[2].length === 2 ? ('20'+parts[2]) : parts[2];
+        var mdy = new Date(y, a-1, b), dmy = new Date(y, b-1, a);
+        var chosen = null;
+        if(p.wochentag){
+          if(!isNaN(mdy.getTime()) && WOCHENTAGE[mdy.getDay()] === p.wochentag) chosen = mdy;
+          else if(!isNaN(dmy.getTime()) && WOCHENTAGE[dmy.getDay()] === p.wochentag) chosen = dmy;
+        }
+        if(!chosen){ if(a>12) chosen=dmy; else if(b>12) chosen=mdy; else chosen=mdy; }
+        if(!chosen || isNaN(chosen.getTime())) return p;
+        var iso = chosen.getFullYear()+'-'+String(chosen.getMonth()+1).padStart(2,'0')+'-'+String(chosen.getDate()).padStart(2,'0');
+        return Object.assign({}, p, { datum: iso });
+      });
+    }
+    function _fsGet(row, keys){
+      for(var h in row){ var hl = (''+h).toLowerCase(); for(var i=0;i<keys.length;i++){ if(hl.indexOf(keys[i])>=0) return (''+row[h]).trim(); } }
+      return '';
+    }
+    function mapFigRow(r){ return { figur:_fsGet(r,['figur','name']), kuerzel:_fsGet(r,['kürzel','kuerzel','kürz','abk']), kurzbeschreibung:_fsGet(r,['beschreib','charakter']) }; }
+    function mapSzRow(r){ return { nummer:_fsGet(r,['nummer','nr']), name:_fsGet(r,['titel','szene','name']), hauptfiguren:_fsGet(r,['hauptfig']), nebenfiguren:_fsGet(r,['nebenfig']), beschreibung:_fsGet(r,['beschreib','inhalt','zusammen']) }; }
+    function triggerImportFigScenes(){
+      var input = document.createElement('input');
+      input.type='file'; input.accept='.xlsx,.xls,.csv';
+      input.onchange = function(){ if(input.files[0]) readFigScenesFile(input.files[0]); };
+      input.click();
+    }
+    function readFigScenesFile(file){
+      var name = (file.name||'').toLowerCase(); var reader = new FileReader();
+      var isXlsx = name.endsWith('.xlsx') || name.endsWith('.xls');
+      reader.onload = function(e){
+        try {
+          var figuren=[], szenen=[];
+          if(isXlsx){
+            var wb = XLSX.read(e.target.result, {type:'array'});
+            wb.SheetNames.forEach(function(sn){
+              var rows = XLSX.utils.sheet_to_json(wb.Sheets[sn], {defval:''});
+              if(!rows.length) return;
+              var snl = sn.toLowerCase();
+              var hs = Object.keys(rows[0]).join(' ').toLowerCase();
+              if(snl.indexOf('figur')>=0) figuren = figuren.concat(rows.map(mapFigRow));
+              else if(snl.indexOf('szene')>=0 || snl.indexOf('scene')>=0) szenen = szenen.concat(rows.map(mapSzRow));
+              else if(hs.indexOf('hauptfig')>=0 || hs.indexOf('nummer')>=0) szenen = szenen.concat(rows.map(mapSzRow));
+              else figuren = figuren.concat(rows.map(mapFigRow));
+            });
+          } else {
+            var rows = parseCSV(e.target.result);
+            if(rows.length){
+              var hs = Object.keys(rows[0]).join(' ').toLowerCase();
+              if(hs.indexOf('hauptfig')>=0 || hs.indexOf('nummer')>=0) szenen = rows.map(mapSzRow);
+              else figuren = rows.map(mapFigRow);
+            }
+          }
+          figuren = figuren.filter(function(f){ return f.figur; });
+          szenen = szenen.filter(function(s){ return s.nummer || s.name; });
+          if(!figuren.length && !szenen.length){ alert('Keine Figuren- oder Szenendaten erkannt. Erwartet: Blätter «Figuren» und «Szenen» mit Spaltenüberschriften (z. B. Name/Figur, Kürzel, Beschreibung bzw. Nummer, Titel, Hauptfiguren, Nebenfiguren).'); return; }
+          showFigScenesDiff(computeFigScenesDiff(figuren, szenen));
+        } catch(err){ alert('Fehler beim Lesen der Datei: ' + err.message); }
+      };
+      if(isXlsx) reader.readAsArrayBuffer(file); else reader.readAsText(file);
+    }
+    function computeFigScenesDiff(figs, szs){
+      var exFig = getData(KEYS.figuren), exSz = getData(KEYS.szenen);
+      function fkey(f){ return ((f.figur||f.name||'')+'').toLowerCase().trim(); }
+      function skey(s){ return ((s.nummer||'')+'').toLowerCase().trim(); }
+      var d = { figAdd:[], figChg:[], figDel:[], szAdd:[], szChg:[], szDel:[] };
+      var seenF={};
+      figs.forEach(function(im){
+        var k=fkey(im); if(!k) return; seenF[k]=1;
+        var ex=exFig.find(function(f){ return fkey(f)===k; });
+        if(!ex){ d.figAdd.push(im); return; }
+        var ch=[];
+        [['figur'],['kuerzel'],['kurzbeschreibung']].forEach(function(p){
+          var nv=(im[p[0]]||''), ov=(ex[p[0]]||'');
+          if(nv && nv!==ov) ch.push({field:p[0], old:ov, neu:nv});
+        });
+        if(ch.length) d.figChg.push({ex:ex, changes:ch});
+      });
+      if(figs.length) exFig.forEach(function(f){ if(!seenF[fkey(f)]) d.figDel.push(f); });
+      var seenS={};
+      szs.forEach(function(im){
+        var k=skey(im); if(!k) return; seenS[k]=1;
+        var ex=exSz.find(function(s){ return skey(s)===k; });
+        if(!ex){ d.szAdd.push(im); return; }
+        var ch=[];
+        [['name'],['hauptfiguren'],['nebenfiguren'],['beschreibung']].forEach(function(p){
+          var nv=(im[p[0]]||''), ov=(ex[p[0]]||'');
+          if(nv && nv!==ov) ch.push({field:p[0], old:ov, neu:nv});
+        });
+        if(ch.length) d.szChg.push({ex:ex, changes:ch});
+      });
+      if(szs.length) exSz.forEach(function(s){ if(!seenS[skey(s)]) d.szDel.push(s); });
+      return d;
+    }
+    function _esc(s){ return escapeHtml(s==null?'':(''+s)); }
+    function showFigScenesDiff(d){
+      pendingFigDiff = d;
+      function secAdd(items,cat,isSz){ if(!items.length) return ''; return items.map(function(im,i){ var t=isSz?('<b>'+_esc(im.nummer)+'</b> '+_esc(im.name)):('<b>'+_esc(im.figur)+'</b>'+(im.kuerzel?(' ('+_esc(im.kuerzel)+')'):'')); return "<label style='display:flex;gap:8px;padding:3px 0;'><input type='checkbox' id='fd_"+cat+"_"+i+"' checked><span>"+t+"</span></label>"; }).join(''); }
+      function secChg(items,cat){ if(!items.length) return ''; return items.map(function(c,i){ var title=c.ex.nummer?('<b>'+_esc(c.ex.nummer)+'</b> '+_esc(c.ex.name||c.ex.figur)):('<b>'+_esc(c.ex.figur||c.ex.name)+'</b>'); var det=c.changes.map(function(ch){ return "<div style='font-size:12px;margin-left:22px;color:#475569;'>"+_esc(ch.field)+": <span style='color:#b91c1c;text-decoration:line-through;'>"+(_esc(ch.old)||'—')+"</span> → <span style='color:#15803d;'>"+_esc(ch.neu)+"</span></div>"; }).join(''); return "<div style='padding:3px 0;'><label style='display:flex;gap:8px;'><input type='checkbox' id='fd_"+cat+"_"+i+"' checked><span>"+title+"</span></label>"+det+"</div>"; }).join(''); }
+      function secDel(items,cat,isSz){ if(!items.length) return ''; return items.map(function(x,i){ var t=isSz?('<b>'+_esc(x.nummer)+'</b> '+_esc(x.name)):('<b>'+_esc(x.figur||x.name)+'</b>'); return "<label style='display:flex;gap:8px;padding:3px 0;color:#b91c1c;'><input type='checkbox' id='fd_"+cat+"_"+i+"'><span>"+t+"</span></label>"; }).join(''); }
+      function block(title,html,note){ return html?("<div style='margin:10px 0;'><div style='font-weight:600;color:#0f172a;margin-bottom:4px;'>"+title+(note?(" <span style='font-weight:400;color:#64748b;font-size:12px;'>"+note+"</span>"):"")+"</div>"+html+"</div>"):''; }
+      var body='';
+      body+=block('Figuren – neu', secAdd(d.figAdd,'figadd',false));
+      body+=block('Figuren – geändert', secChg(d.figChg,'figchg'));
+      body+=block('Figuren – nur in der App', secDel(d.figDel,'figdel',false), '(anhaken = löschen)');
+      body+=block('Szenen – neu', secAdd(d.szAdd,'szadd',true));
+      body+=block('Szenen – geändert', secChg(d.szChg,'szchg'));
+      body+=block('Szenen – nur in der App', secDel(d.szDel,'szdel',true), '(anhaken = löschen)');
+      if(!body) body="<div style='padding:16px 0;color:#475569;'>Keine Unterschiede gefunden – Bestand und Datei sind identisch.</div>";
+      var counts='Neu: '+(d.figAdd.length+d.szAdd.length)+' · Geändert: '+(d.figChg.length+d.szChg.length)+' · Nur in App: '+(d.figDel.length+d.szDel.length);
+      var ov=document.getElementById('figdiff-overlay'); if(ov) ov.remove();
+      ov=document.createElement('div'); ov.id='figdiff-overlay';
+      ov.style.cssText='position:fixed;inset:0;background:rgba(15,23,42,.55);z-index:9999;display:flex;align-items:center;justify-content:center;padding:20px;';
+      ov.innerHTML="<div style='background:#fff;border-radius:12px;max-width:720px;width:100%;max-height:85vh;display:flex;flex-direction:column;box-shadow:0 20px 60px rgba(0,0,0,.3);'>"+
+        "<div style='padding:16px 20px;border-bottom:1px solid #e2e8f0;'><div style='font-size:18px;font-weight:700;color:#0f172a;'>Figuren &amp; Szenen – Änderungen prüfen</div><div style='font-size:12px;color:#64748b;margin-top:2px;'>"+counts+"</div></div>"+
+        "<div style='padding:12px 20px;overflow:auto;'>"+body+"</div>"+
+        "<div style='padding:14px 20px;border-top:1px solid #e2e8f0;display:flex;justify-content:flex-end;gap:10px;'>"+
+        "<button onclick='closeFigDiff()' style='padding:8px 16px;border-radius:8px;border:1px solid #cbd5e1;background:#fff;color:#334155;cursor:pointer;'>Abbrechen</button>"+
+        "<button onclick='applyFigScenesDiff()' style='padding:8px 16px;border-radius:8px;border:none;background:#0d9488;color:#fff;font-weight:600;cursor:pointer;'>Angehakte übernehmen</button>"+
+        "</div></div>";
+      document.body.appendChild(ov);
+    }
+    function closeFigDiff(){ var ov=document.getElementById('figdiff-overlay'); if(ov) ov.remove(); pendingFigDiff=null; }
+    function applyFigScenesDiff(){
+      var d=pendingFigDiff; if(!d){ closeFigDiff(); return; }
+      var figs=getData(KEYS.figuren), szs=getData(KEYS.szenen); var nF=0,nS=0;
+      function chk(id){ var el=document.getElementById(id); return !!(el && el.checked); }
+      d.figAdd.forEach(function(im,i){ if(chk('fd_figadd_'+i)){ figs.push({id:genId(),figur:im.figur,name:im.figur,kuerzel:im.kuerzel||'',kurzbeschreibung:im.kurzbeschreibung||'',_source:'import',_readOnly:false}); nF++; } });
+      d.figChg.forEach(function(c,i){ if(chk('fd_figchg_'+i)){ var t=figs.find(function(f){return f.id===c.ex.id;}); if(t){ c.changes.forEach(function(ch){ t[ch.field]=ch.neu; if(ch.field==='figur') t.name=ch.neu; }); nF++; } } });
+      d.figDel.forEach(function(x,i){ if(chk('fd_figdel_'+i)){ figs=figs.filter(function(f){return f.id!==x.id;}); nF++; } });
+      d.szAdd.forEach(function(im,i){ if(chk('fd_szadd_'+i)){ szs.push({id:genId(),nummer:im.nummer,name:im.name,szene:im.name,hauptfiguren:im.hauptfiguren||'',nebenfiguren:im.nebenfiguren||'',beschreibung:im.beschreibung||'',_source:'import',_readOnly:false}); nS++; } });
+      d.szChg.forEach(function(c,i){ if(chk('fd_szchg_'+i)){ var t=szs.find(function(s){return s.id===c.ex.id;}); if(t){ c.changes.forEach(function(ch){ t[ch.field]=ch.neu; if(ch.field==='name') t.szene=ch.neu; }); nS++; } } });
+      d.szDel.forEach(function(x,i){ if(chk('fd_szdel_'+i)){ szs=szs.filter(function(s){return s.id!==x.id;}); nS++; } });
+      setData(KEYS.figuren, figs); setData(KEYS.szenen, szs);
+      closeFigDiff();
+      if(typeof render==='function') render();
+      showToast('Übernommen: '+nF+' Figuren-, '+nS+' Szenen-Änderungen', 'success');
+    }
+
     function triggerImportNina() {
       const input = document.createElement('input');
       input.type = 'file'; input.accept = '.json';
@@ -2535,7 +2693,7 @@
       }
       
       // Migrate probenplanung data
-      migrateProbenplanung();
+      migrateProbenplanung(); migrateUnlock();
       render(); 
     }
     function deleteProjekt(id) { if (!confirm('Löschen?')) return; state.projekte = state.projekte.filter(p => p.id !== id); save(KEYS.projekte, state.projekte); if (state.projekt?.id === id) { state.projekt = null; save(KEYS.aktuellesProjekt, null); } Object.keys(localStorage).forEach(key => { if (key.includes(id)) localStorage.removeItem(key); }); render(); }
@@ -2544,7 +2702,7 @@
       // Read-only-Schutz
       const checkData = getData(keyMap[type]);
       const checkItem = checkData.find(d => d.id === id);
-      if (checkItem && checkItem._readOnly) { alert('🔒 Dieses Element ist geschützt und kann in Propla nicht gelöscht werden.'); return; }
+      if (false) { /* Sicherung entfernt */ }
       if (!confirm('Eintrag wirklich löschen?')) return;
       // Item VOR dem Löschen holen für Bereinigung
       const allData = getData(keyMap[type]);
@@ -2603,7 +2761,7 @@
       }
       render(); 
     }
-    function importBackup(input) { const file = input.files[0]; if (!file) return; const reader = new FileReader(); reader.onload = (e) => { try { const data = JSON.parse(e.target.result); const p = { id: genId(), name: data.projectInfo?.name || 'Import', premiere: data.projectInfo?.premiere || '', regie: data.projectInfo?.regie || '', spielstaette: data.projectInfo?.spielstaette || '', createdAt: new Date().toISOString() }; state.projekte.push(p); save(KEYS.projekte, state.projekte); const imp = (key, arr) => { if (arr?.length) save(key(p.id), arr.map(i => ({ ...i, id: i.id || genId() }))); }; imp(KEYS.probedaten, data.probedaten); imp(KEYS.ensemble, data.ensemble); imp(KEYS.kuenstlerischesTeam, data.kuenstlerischesTeam || data.team); imp(KEYS.teamVerfuegbarkeit, data.teamVerfuegbarkeit); imp(KEYS.figuren, data.figuren); imp(KEYS.zuordnungen, data.zuordnungen); imp(KEYS.szenen, data.szenen); imp(KEYS.absenzen, data.absenzen); imp(KEYS.probenplanung, data.probenplanung); selectProjekt(p.id); alert('✓ Import OK!'); } catch (err) { alert('Fehler: ' + err.message); } }; reader.readAsText(file); }
+    function importBackup(input) { const file = input.files[0]; if (!file) return; const reader = new FileReader(); reader.onload = (e) => { try { const data = JSON.parse(e.target.result); const p = { id: genId(), name: data.projectInfo?.name || 'Import', premiere: data.projectInfo?.premiere || '', regie: data.projectInfo?.regie || '', spielstaette: data.projectInfo?.spielstaette || '', createdAt: new Date().toISOString() }; state.projekte.push(p); save(KEYS.projekte, state.projekte); const imp = (key, arr) => { if (arr?.length) save(key(p.id), arr.map(i => ({ ...i, id: i.id || genId() }))); }; imp(KEYS.probedaten, normalizeProbeDates(data.probedaten)); imp(KEYS.ensemble, data.ensemble); imp(KEYS.kuenstlerischesTeam, data.kuenstlerischesTeam || data.team); imp(KEYS.teamVerfuegbarkeit, data.teamVerfuegbarkeit); imp(KEYS.figuren, data.figuren); imp(KEYS.zuordnungen, data.zuordnungen); imp(KEYS.szenen, data.szenen); imp(KEYS.absenzen, data.absenzen); imp(KEYS.probenplanung, data.probenplanung); selectProjekt(p.id); alert('✓ Import OK!'); } catch (err) { alert('Fehler: ' + err.message); } }; reader.readAsText(file); }
     
     // ============================================
     // NINA-EXCHANGE IMPORT (von Dramera/Rebu)
@@ -2918,7 +3076,7 @@
             color: fig.color || '',
             figure_type: fig.figure_type || 'main',
             _source: figurenReadOnly ? source : 'propla',
-            _readOnly: figurenReadOnly
+            _readOnly: false
           });
           importedFiguren++;
         } else {
@@ -2930,7 +3088,7 @@
           if (!existing.color && fig.color) { existing.color = fig.color; updated = true; }
           if (!existing.kuerzel && fig.short_name) { existing.kuerzel = fig.short_name; updated = true; }
           // Source-Markierung setzen wenn von Rebu/Werkbank
-          if (figurenReadOnly && !existing._source) { existing._source = source; existing._readOnly = true; updated = true; }
+          if (figurenReadOnly && !existing._source) { existing._source = source; existing._readOnly = false; updated = true; }
           if (updated) updatedFiguren++; else skippedFiguren++;
         }
       }
@@ -2968,7 +3126,7 @@
             hauptfiguren: hauptfiguren, nebenfiguren: '',
             ort: scene.location || '', zeit: scene.time || '',
             _source: figurenReadOnly ? source : 'propla',
-            _readOnly: figurenReadOnly
+            _readOnly: false
           });
           importedSzenen++;
         } else {
@@ -2978,7 +3136,7 @@
           if (!existing.beschreibung && (scene.description || scene.summary)) { existing.beschreibung = scene.description || scene.summary; updated = true; }
           if (!existing.ort && scene.location) { existing.ort = scene.location; updated = true; }
           if (!existing.zeit && scene.time) { existing.zeit = scene.time; updated = true; }
-          if (figurenReadOnly && !existing._source) { existing._source = source; existing._readOnly = true; updated = true; }
+          if (figurenReadOnly && !existing._source) { existing._source = source; existing._readOnly = false; updated = true; }
           if (updated) updatedSzenen++; else skippedSzenen++;
         }
       }
@@ -3442,7 +3600,7 @@
     
     // Initial migration
     if (state.projekt) {
-      migrateProbenplanung();
+      migrateProbenplanung(); migrateUnlock();
       
       // Cloud-ID initialisieren wenn Projekt mit Cloud verknüpft ist
       if (state.projekt.cloudId) {
