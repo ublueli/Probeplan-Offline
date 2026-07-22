@@ -6,6 +6,7 @@
   <title>Dramera Propla v3.0 - Probeplaner Stand-alone (NINA-Exchange v3.0)</title>
   <script src="https://cdn.tailwindcss.com"></script>
   <script src="https://cdn.jsdelivr.net/npm/xlsx-js-style@1.2.0/dist/xlsx.bundle.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
   <!-- Supabase entfernt für Stand-alone Version -->
   <style>
     * { box-sizing: border-box; }
@@ -982,6 +983,8 @@
         </div>
       `;
       renderModal();
+      // Browser-Autofill überall abschalten (verhindert das «Turm»-Verhalten)
+      document.querySelectorAll('input, textarea').forEach(el => { if (!el.hasAttribute('autocomplete')) el.setAttribute('autocomplete', 'off'); });
     }
 
     function renderSidebar() {
@@ -1032,14 +1035,17 @@
                 <span>📥</span> Figuren &amp; Szenen (Excel/CSV)…
               </button>
               <button class="w-full text-left px-4 py-2 hover:bg-slate-700 text-teal-100 flex items-center gap-3" onclick="closeDateiMenu(); triggerImportBackup()">
-                <span>💾</span> Backup wiederherstellen…
+                <span>📂</span> Sicherung öffnen… <span class="text-gray-500 text-xs ml-auto">.zip / .json</span>
               </button>
               <div class="border-t border-white/10 my-1"></div>
-              <button class="w-full text-left px-4 py-2 hover:bg-slate-700 text-teal-100 flex items-center gap-3" onclick="closeDateiMenu(); exportBackup(state.projekt?.id)" ${!state.projekt ? 'disabled style="opacity:0.4"' : ''}>
-                <span>💾</span> Backup exportieren
+              <button class="w-full text-left px-4 py-2 hover:bg-slate-700 text-teal-100 flex items-center gap-3" onclick="closeDateiMenu(); sichernProjekt()" ${!state.projekt ? 'disabled style="opacity:0.4"' : ''}>
+                <span>💾</span> Sichern (ZIP)
+              </button>
+              <button class="w-full text-left px-4 py-2 hover:bg-slate-700 text-teal-100 flex items-center gap-3" onclick="closeDateiMenu(); sichernAnNeuemOrt()" ${!state.projekt ? 'disabled style="opacity:0.4"' : ''}>
+                <span>💾</span> An neuem Ort speichern…
               </button>
               <button class="w-full text-left px-4 py-2 hover:bg-slate-700 text-teal-100 flex items-center gap-3" onclick="closeDateiMenu(); exportNinaExchange()" ${!state.projekt ? 'disabled style="opacity:0.4"' : ''}>
-                <span>🔄</span> Für Rebu / Werkbank
+                <span>🔄</span> Austausch-Datei speichern…
               </button>
               <div class="border-t border-white/10 my-1"></div>
               <button class="w-full text-left px-4 py-2 hover:bg-slate-700 text-teal-100 flex items-center gap-3" onclick="closeDateiMenu(); navigate('listen')" ${!state.projekt ? 'disabled style="opacity:0.4"' : ''}>
@@ -1092,7 +1098,7 @@
         <header class="bg-white border-b px-6 py-3 flex items-center justify-between shadow-sm">
           <h1 class="text-lg font-semibold text-gray-800">${titles[state.page] || 'Dramera Propla'}</h1>
           <div class="flex items-center gap-4">
-            <span class="text-sm text-gray-500">${new Date().toLocaleDateString('de-DE', { weekday: 'long', day: 'numeric', month: 'long' })}</span>
+            <span class="text-sm text-gray-500">${new Date().toLocaleDateString('de-CH', { weekday: 'long', day: 'numeric', month: 'long' })}</span>
           </div>
         </header>
       `;
@@ -1151,7 +1157,7 @@
               </div>
               <label class="btn btn-success cursor-pointer">
                 📂 Datei wählen
-                <input type="file" accept=".json" onchange="importBackup(this)" class="hidden">
+                <input type="file" accept=".json,.zip" onchange="importBackup(this)" class="hidden">
               </label>
             </div>
           </div>
@@ -2744,7 +2750,7 @@
             <p>Deine Daten liegen nur in diesem Browser. Speichere darum regelmässig eine <strong>Sicherungskopie</strong> über das Datei-Menü (<strong>«Backup exportieren»</strong>). Legst du diese Datei auf Google Drive oder einen Stick, kannst du dein Projekt auf einem anderen Gerät über <strong>«Backup wiederherstellen…»</strong> weiterführen.</p>`)}
 
           ${sec('🔄', 'Zusammenspiel mit Rebu', `
-            <p>Propla ist ein eigenständiges Programm – du kannst damit arbeiten, ohne je eine andere App zu öffnen. Wer aber zusätzlich mit <strong>Rebu</strong> arbeitet, dem Regiebuch aus derselben Werkzeug-Familie, kann beide verbinden: Figuren, Szenen und Besetzung aus Rebu übernimmst du hier über <strong>Datei → «Austausch-Datei laden…»</strong>. Umgekehrt gibst du deine Propla-Daten über <strong>«Für Rebu / Werkbank»</strong> weiter.</p>
+            <p>Propla ist ein eigenständiges Programm – du kannst damit arbeiten, ohne je eine andere App zu öffnen. Wer aber zusätzlich mit <strong>Rebu</strong> arbeitet, dem Regiebuch aus derselben Werkzeug-Familie, kann beide verbinden: Figuren, Szenen und Besetzung aus Rebu übernimmst du hier über <strong>Datei → «Austausch-Datei laden…»</strong>. Umgekehrt gibst du deine Propla-Daten über <strong>Datei → «Austausch-Datei speichern…»</strong> weiter.</p>
             <p>Beim Einlesen übernimmt Propla alles Neue automatisch. Wo sich etwas widerspricht – eine geänderte Mailadresse, eine gestrichene Figur – hält es an und fragt Feld für Feld nach, sodass du selbst entscheidest, was übernommen wird. So bleiben Regiebuch und Probeplan aufeinander abgestimmt, ohne dass etwas ungefragt überschrieben wird.</p>`)}
 
           <div class="card p-6 mb-4" style="background:linear-gradient(135deg,#f5f3ff,#ecfeff);border-color:#c4b5fd;">
@@ -3047,7 +3053,31 @@
       }
       render(); 
     }
-    function importBackup(input) { const file = input.files[0]; if (!file) return; const reader = new FileReader(); reader.onload = (e) => { try { const data = JSON.parse(e.target.result); const p = { id: genId(), name: data.projectInfo?.name || 'Import', premiere: data.projectInfo?.premiere || '', regie: data.projectInfo?.regie || '', spielstaette: data.projectInfo?.spielstaette || '', createdAt: new Date().toISOString() }; state.projekte.push(p); save(KEYS.projekte, state.projekte); const imp = (key, arr) => { if (arr?.length) save(key(p.id), arr.map(i => ({ ...i, id: i.id || genId() }))); }; imp(KEYS.probedaten, normalizeProbeDates(data.probedaten)); imp(KEYS.ensemble, data.ensemble); imp(KEYS.kuenstlerischesTeam, data.kuenstlerischesTeam || data.team); imp(KEYS.teamVerfuegbarkeit, data.teamVerfuegbarkeit); imp(KEYS.figuren, data.figuren); imp(KEYS.zuordnungen, data.zuordnungen); imp(KEYS.szenen, data.szenen); imp(KEYS.absenzen, data.absenzen); imp(KEYS.probenplanung, data.probenplanung); selectProjekt(p.id); alert('✓ Import OK!'); } catch (err) { alert('Fehler: ' + err.message); } }; reader.readAsText(file); }
+    function _verarbeiteBackupDaten(data) {
+      const p = { id: genId(), name: data.projectInfo?.name || 'Import', premiere: data.projectInfo?.premiere || '', regie: data.projectInfo?.regie || '', spielstaette: data.projectInfo?.spielstaette || '', createdAt: new Date().toISOString() };
+      state.projekte.push(p); save(KEYS.projekte, state.projekte);
+      const imp = (key, arr) => { if (arr?.length) save(key(p.id), arr.map(i => ({ ...i, id: i.id || genId() }))); };
+      imp(KEYS.probedaten, normalizeProbeDates(data.probedaten)); imp(KEYS.ensemble, data.ensemble); imp(KEYS.kuenstlerischesTeam, data.kuenstlerischesTeam || data.team); imp(KEYS.teamVerfuegbarkeit, data.teamVerfuegbarkeit); imp(KEYS.figuren, data.figuren); imp(KEYS.zuordnungen, data.zuordnungen); imp(KEYS.szenen, data.szenen); imp(KEYS.absenzen, data.absenzen); imp(KEYS.probenplanung, data.probenplanung); imp(KEYS.szenenbloecke, data.szenenbloecke);
+      selectProjekt(p.id); alert('✓ Import OK!');
+    }
+    function importBackup(input) {
+      const file = input.files[0]; if (!file) return;
+      if (/\.zip$/i.test(file.name)) {
+        if (typeof JSZip === 'undefined') { alert('ZIP-Bibliothek nicht geladen. Bitte Seite neu laden.'); return; }
+        JSZip.loadAsync(file).then(zip => {
+          let entry = null;
+          zip.forEach((path, e) => { if (!e.dir && /_Propla\.json$|\.propla\.json$/i.test(path) && !entry) entry = e; });
+          if (!entry) zip.forEach((path, e) => { if (!e.dir && /\.json$/i.test(path) && !/exchange|nina/i.test(path) && !entry) entry = e; });
+          if (!entry) { alert('Im ZIP wurde keine Propla-Sicherung gefunden.'); return; }
+          entry.async('string').then(txt => { try { _verarbeiteBackupDaten(JSON.parse(txt)); } catch (err) { alert('Fehler: ' + err.message); } });
+        }).catch(err => alert('Fehler beim Lesen des ZIP: ' + err.message));
+      } else {
+        const reader = new FileReader();
+        reader.onload = (e) => { try { _verarbeiteBackupDaten(JSON.parse(e.target.result)); } catch (err) { alert('Fehler: ' + err.message); } };
+        reader.readAsText(file);
+      }
+      input.value = '';
+    }
     
     // ============================================
     // NINA-EXCHANGE IMPORT (von Dramera/Rebu)
@@ -4071,6 +4101,73 @@
       
       alert(msg);
     }
+
+    // ============================================
+    // SICHERN an gewähltem Ort (Datei-System-Zugriff, wie Rebu/Dramera)
+    // Dateiname: Stück_App_Datum. Ort wird gemerkt; «An neuem Ort speichern»
+    // vergisst ihn und fragt neu. Fallback für Safari/Firefox: Download.
+    // ============================================
+    let savedFileHandle = null;
+
+    function buildBackupData(projektId) {
+      const p = state.projekte.find(pr => pr.id === projektId);
+      return {
+        exportedAt: new Date().toISOString(), exportedFrom: 'N!NA-Propla v3.0', projectInfo: p,
+        probedaten: load(KEYS.probedaten(projektId), []), ensemble: load(KEYS.ensemble(projektId), []),
+        kuenstlerischesTeam: load(KEYS.kuenstlerischesTeam(projektId), []), teamVerfuegbarkeit: load(KEYS.teamVerfuegbarkeit(projektId), []),
+        figuren: load(KEYS.figuren(projektId), []), zuordnungen: load(KEYS.zuordnungen(projektId), []),
+        szenen: load(KEYS.szenen(projektId), []), absenzen: load(KEYS.absenzen(projektId), []),
+        probenplanung: load(KEYS.probenplanung(projektId), []), szenenbloecke: load(KEYS.szenenbloecke(projektId), [])
+      };
+    }
+
+    function _safeStueck() {
+      return (state.projekt?.name || 'Projekt').replace(/[\\/:*?"<>|]+/g, '_').replace(/\s+/g, '_').trim();
+    }
+    function backupDateiname() {
+      return _safeStueck() + '_Propla_' + new Date().toISOString().slice(0, 10);
+    }
+
+    async function generatePropBackupBlob() {
+      const projektId = state.projekt.id;
+      const zip = new JSZip();
+      const safe = _safeStueck();
+      zip.file(safe + '_Propla.json', JSON.stringify(buildBackupData(projektId), null, 2));
+      try { const ex = buildPropExchangeData(true); if (ex) zip.file(safe + '_Exchange.nina.json', JSON.stringify(ex, null, 2)); } catch (e) {}
+      return zip.generateAsync({ type: 'blob' });
+    }
+
+    async function sichernProjekt() {
+      if (!state.projekt) { alert('Kein Projekt gewählt.'); return; }
+      if (typeof JSZip === 'undefined') { alert('Die ZIP-Bibliothek ist nicht geladen. Bitte Seite neu laden.'); return; }
+      const blob = await generatePropBackupBlob();
+      const name = backupDateiname() + '.zip';
+      if (window.showSaveFilePicker) {
+        try {
+          if (savedFileHandle && !/\.zip$/i.test(savedFileHandle.name || '')) savedFileHandle = null;
+          if (!savedFileHandle) {
+            savedFileHandle = await window.showSaveFilePicker({
+              suggestedName: name,
+              types: [{ description: 'Propla Sicherungskopie', accept: { 'application/zip': ['.zip'] } }]
+            });
+          }
+          const writable = await savedFileHandle.createWritable();
+          await writable.write(blob);
+          await writable.close();
+          alert('✓ Gesichert: ' + savedFileHandle.name);
+          return;
+        } catch (err) {
+          if (err.name === 'AbortError') return;
+          console.warn('File System Access Fehler, Fallback Download:', err);
+        }
+      }
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = name;
+      a.click();
+    }
+
+    function sichernAnNeuemOrt() { savedFileHandle = null; sichernProjekt(); }
 
     function exportBackup(projektId) { if (!projektId) return; const p = state.projekte.find(pr => pr.id === projektId); const data = { exportedAt: new Date().toISOString(), exportedFrom: 'N!NA-Propla v3.0', projectInfo: p, probedaten: load(KEYS.probedaten(projektId), []), ensemble: load(KEYS.ensemble(projektId), []), kuenstlerischesTeam: load(KEYS.kuenstlerischesTeam(projektId), []), teamVerfuegbarkeit: load(KEYS.teamVerfuegbarkeit(projektId), []), figuren: load(KEYS.figuren(projektId), []), zuordnungen: load(KEYS.zuordnungen(projektId), []), szenen: load(KEYS.szenen(projektId), []), absenzen: load(KEYS.absenzen(projektId), []), probenplanung: load(KEYS.probenplanung(projektId), []) }; const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' }); const a = document.createElement('a'); a.href = URL.createObjectURL(blob); const safeName = (p?.name || 'backup').replace(/[\\/:*?"<>|]+/g, '_').replace(/\s+/g, '_').trim(); const now = new Date(); const ts = now.toISOString().slice(0, 10) + '_' + now.toTimeString().slice(0, 5).replace(':', '-'); a.download = `${safeName}_Propla_Backup_${ts}.json`; a.click(); }
     function exportStyledExcel(type) {
