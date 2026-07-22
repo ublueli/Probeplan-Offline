@@ -2090,6 +2090,8 @@
 
       // Daten für den Zeitblock-Aufbau
       const szenenById = {}; szenen.forEach(s => { szenenById[s.id] = s; });
+      const szeneStatusById = {}; szenenStatus.forEach(s => { szeneStatusById[s.id] = s.status; });
+      const statusDot = (id) => { const st = szeneStatusById[id]; return st === 'rot' ? '🔴 ' : st === 'orange' ? '🟠 ' : st === 'gruen' ? '🟢 ' : ''; };
       const szenenbloeckeAll = getData(KEYS.szenenbloecke);
       let abwesendeNamen = [];
       if (selectedProbeInfo) {
@@ -2159,6 +2161,27 @@
                       <div class="text-sm text-purple-600 italic">Keine Einträge</div>
                     `}
                   </div>
+                  ${szenen.length > 0 ? `
+                    <div class="mt-4">
+                      <div class="text-sm font-medium text-gray-700 mb-2">💡 Szenen heute</div>
+                      <div class="flex gap-3 mb-2 text-xs text-gray-500">
+                        <span class="flex items-center gap-1"><span class="inline-block w-2.5 h-2.5 rounded-full" style="background:#34d399;"></span>probbar</span>
+                        <span class="flex items-center gap-1"><span class="inline-block w-2.5 h-2.5 rounded-full" style="background:#fbbf24;"></span>teilweise</span>
+                        <span class="flex items-center gap-1"><span class="inline-block w-2.5 h-2.5 rounded-full" style="background:#f87171;"></span>fehlt</span>
+                      </div>
+                      <div class="space-y-1 max-h-80 overflow-y-auto">
+                        ${szenenStatus.map(s => `
+                          <div class="szene-${s.status} rounded px-2 py-1 text-xs">
+                            <div class="flex justify-between items-center gap-2">
+                              <span class="font-medium">${escapeHtml(s.nummer || '')} ${escapeHtml(s.name || s.szene || '')}</span>
+                              <span>${s.status === 'gruen' ? '🟢' : s.status === 'orange' ? '🟠' : '🔴'}</span>
+                            </div>
+                            ${s.fehlend.length > 0 ? `<div class="text-red-600 mt-0.5">fehlt: ${escapeHtml(s.fehlend.join(', '))}</div>` : ''}
+                          </div>
+                        `).join('')}
+                      </div>
+                    </div>
+                  ` : ''}
                 ` : ''}
               `}
             </div>
@@ -2198,7 +2221,7 @@
                         <div class="flex gap-2">
                           <select onchange="if(this.value){addSzeneToZeitblock('${state.selectedProbe}','${b.id}',this.value);this.value='';}" class="text-xs flex-1">
                             <option value="">+ Szene…</option>
-                            ${szenen.map(s => `<option value="${s.id}">${escapeHtml(s.nummer || '')} ${escapeHtml(s.name || s.szene || '')}</option>`).join('')}
+                            ${szenen.map(s => `<option value="${s.id}">${statusDot(s.id)}${escapeHtml(s.nummer || '')} ${escapeHtml(s.name || s.szene || '')}</option>`).join('')}
                           </select>
                           ${szenenbloeckeAll.length > 0 ? `
                           <select onchange="if(this.value){addSzenenblockToZeitblock('${state.selectedProbe}','${b.id}',this.value);this.value='';}" class="text-xs flex-1">
