@@ -161,6 +161,7 @@
       szenen: (id) => `${STORAGE_PREFIX}szenen_${id}`,
       absenzen: (id) => `${STORAGE_PREFIX}absenzen_${id}`,
       probenplanung: (id) => `${STORAGE_PREFIX}probenplanung_${id}`,
+      szenenbloecke: (id) => `${STORAGE_PREFIX}szenenbloecke_${id}`,
     };
 
     const MONATE = ['Januar', 'Februar', 'März', 'April', 'Mai', 'Juni', 'Juli', 'August', 'September', 'Oktober', 'November', 'Dezember'];
@@ -947,6 +948,7 @@
         { id: 'dashboard', label: 'Dashboard', icon: '🏠' },
         { id: 'probedaten', label: 'Probedaten', icon: '📅' },
         { id: 'szenenvorschlag', label: 'Probeplan', icon: '📋' },
+        { id: 'szenenbloecke', label: 'Szenenblöcke', icon: '🧩' },
         { id: 'absenzen', label: 'Absenzen', icon: '🚫' },
       ]},
       ensemble: { label: 'BESETZUNG', items: [
@@ -959,6 +961,7 @@
       ]},
       system: { label: 'SYSTEM', items: [
         { id: 'listen', label: 'Listen-Export', icon: '📋' },
+        { id: 'hilfe', label: 'Hilfe & Anleitung', icon: '❓' },
         { id: 'einstellungen', label: 'Einstellungen', icon: '⚙️' },
       ]}
     };
@@ -1080,7 +1083,9 @@
         team: '🎬 Künstlerisches Team', teamverfuegbarkeit: '📆 Team-Verfügbarkeit',
         figuren: '🎭 Figuren', zuordnung: '🔗 Besetzung', 
         szenen: '📑 Szenen', absenzen: '🚫 Absenzen', szenenvorschlag: '📋 Probeplan',
+        szenenbloecke: '🧩 Szenenblöcke',
         listen: '📋 Listen-Export',
+        hilfe: '❓ Hilfe & Anleitung',
         einstellungen: '⚙️ Einstellungen'
       };
       return `
@@ -1099,7 +1104,7 @@
         return renderProjektAuswahl();
       }
       
-      if (!state.projekt && !['dashboard', 'einstellungen'].includes(state.page)) {
+      if (!state.projekt && !['dashboard', 'einstellungen', 'hilfe'].includes(state.page)) {
         return `<div class="flex items-center justify-center h-full"><div class="text-center card p-8"><div class="text-5xl mb-4">📁</div><h2 class="text-xl font-semibold mb-2">Kein Projekt ausgewählt</h2><button onclick="showProjektAuswahl()" class="btn btn-primary">Projekt wählen</button></div></div>`;
       }
       switch (state.page) {
@@ -1113,7 +1118,9 @@
         case 'szenen': return renderSzenen();
         case 'absenzen': return renderAbsenzen();
         case 'szenenvorschlag': return renderSzenenvorschlag();
+        case 'szenenbloecke': return renderSzenenbloecke();
         case 'listen': return renderListen();
+        case 'hilfe': return renderHilfe();
         case 'einstellungen': return renderEinstellungen();
         default: return '<div>Seite nicht gefunden</div>';
       }
@@ -2056,12 +2063,15 @@
       // GESAMTER Probeplan: Alle Proben mit Szenen sammeln
       const gesamtPlan = [];
       probenplanung.forEach(pl => {
-        if (pl.szenen && pl.szenen.length > 0) {
+        const hasBloecke = pl.bloecke && pl.bloecke.length > 0;
+        const hasSzenen = pl.szenen && pl.szenen.length > 0;
+        if (hasBloecke || hasSzenen) {
           const probe = probedaten.find(p => String(p.id) === String(pl.probeId));
           if (probe) {
             gesamtPlan.push({
               probe: probe,
-              szenen: pl.szenen.map(szId => szenen.find(s => s.id === szId)).filter(s => s)
+              bloecke: hasBloecke ? pl.bloecke : null,
+              szenen: (pl.szenen || []).map(szId => szenen.find(s => s.id === szId)).filter(s => s)
             });
           }
         }
@@ -2072,12 +2082,32 @@
       // Beteiligte für eine Szene ermitteln
       const getBeteiligte = (sz) => {
         const figuren = [...(sz.hauptfiguren || '').split(','), ...(sz.nebenfiguren || '').split(',')].map(f => f.trim()).filter(f => f);
-        return figuren.map(f => { 
-          const z = zuordnungen.find(zu => (zu.figur || '').toLowerCase() === f.toLowerCase()); 
-          return z?.schauspieler; 
+        return figuren.map(f => {
+          const z = zuordnungen.find(zu => (zu.figur || '').toLowerCase() === f.toLowerCase());
+          return z?.schauspieler;
         }).filter(s => s);
       };
-      
+
+      // Daten für den Zeitblock-Aufbau
+      const szenenById = {}; szenen.forEach(s => { szenenById[s.id] = s; });
+      const szenenbloeckeAll = getData(KEYS.szenenbloecke);
+      let abwesendeNamen = [];
+      if (selectedProbeInfo) {
+        const pd = toISODate(selectedProbeInfo.datum);
+        abwesendeNamen = absenzen.filter(a => toISODate(a.datum) === pd).map(a => a.schauspieler);
+      }
+      const currentBloecke = state.selectedProbe ? getPlanBloecke(state.selectedProbe) : [];
+      // Eine Szene innerhalb eines Zeitblocks als Chip darstellen (mit Absenz-Warnung)
+      const szeneChip = (sid, probeId, blockId) => {
+        const s = szenenById[sid];
+        if (!s) return '';
+        const fehlt = getBeteiligte(s).filter(a => abwesendeNamen.includes(a));
+        return `<span class="inline-flex items-center gap-1 ${fehlt.length ? 'bg-amber-100 text-amber-800' : 'bg-gray-100 text-gray-700'} rounded px-2 py-0.5 text-xs mr-1 mb-1" ${fehlt.length ? `title="Fehlt: ${escapeHtml(fehlt.join(', '))}"` : ''}>
+          ${escapeHtml(s.nummer || '')} ${escapeHtml(s.name || s.szene || '')}${fehlt.length ? ' ⚠️' : ''}
+          <button onclick="removeSzeneFromZeitblock('${probeId}','${blockId}','${sid}')" class="text-gray-400 hover:text-red-500">✕</button>
+        </span>`;
+      };
+
       return `
         <div class="fade-in">
           <div class="grid grid-cols-3 gap-6">
@@ -2133,42 +2163,53 @@
               `}
             </div>
             
-            <!-- MITTLERE SPALTE: Verfügbare Szenen -->
+            <!-- MITTLERE SPALTE: Zeitblöcke des Abends -->
             <div class="card p-5">
-              <h3 class="font-semibold text-gray-800 mb-4">💡 Verfügbare Szenen</h3>
+              <div class="flex justify-between items-center mb-3">
+                <h3 class="font-semibold text-gray-800">🕐 Zeitblöcke</h3>
+                ${state.selectedProbe ? `<button onclick="addZeitblock('${state.selectedProbe}')" class="btn btn-primary btn-sm">+ Zeitblock</button>` : ''}
+              </div>
               ${!state.selectedProbe ? `
                 <div class="text-center text-gray-400 py-8">
                   <div class="text-4xl mb-2">👈</div>
                   <p>Probe wählen</p>
                 </div>
-              ` : szenen.length === 0 ? `
-                <div class="text-center text-gray-400 py-8">
-                  <div class="text-4xl mb-2">📑</div>
-                  <p>Keine Szenen</p>
-                </div>
               ` : `
-                <div class="flex gap-2 mb-3 text-xs">
-                  <div class="flex items-center gap-1"><div class="w-3 h-3 rounded bg-green-200 border border-green-400"></div>Probbar</div>
-                  <div class="flex items-center gap-1"><div class="w-3 h-3 rounded bg-yellow-200 border border-yellow-400"></div>Eingeschränkt</div>
-                  <div class="flex items-center gap-1"><div class="w-3 h-3 rounded bg-red-200 border border-red-400"></div>Nicht probbar</div>
-                </div>
-                <div class="space-y-2 max-h-96 overflow-y-auto">
-                  ${szenenStatus.map(s => `
-                    <div class="szene-item szene-${s.status} ${s.istGeplant ? 'selected-for-probe' : ''}" onclick="toggleSzeneForProbe('${s.id}')">
-                      <div class="flex justify-between items-start">
-                        <div class="flex-1">
-                          <div class="font-medium text-sm">${s.nummer ? `${escapeHtml(s.nummer)} – ` : ''}${escapeHtml(s.name || s.szene || '')}</div>
-                          <div class="text-xs text-gray-500 mt-1">${s.alleFiguren.length > 0 ? s.alleFiguren.slice(0, 4).join(', ') + (s.alleFiguren.length > 4 ? '...' : '') : '<em>keine Figuren</em>'}</div>
+                <div class="text-xs text-gray-500 mb-3">Abend: ${selectedProbeInfo?.anfangszeit || '?'}–${selectedProbeInfo?.endzeit || '?'} · teile ihn in Blöcke und lege je Block Szenen oder einen ganzen Szenenblock hinein.</div>
+                ${currentBloecke.length === 0 ? `
+                  <div class="text-center text-gray-400 py-6 border-2 border-dashed rounded-lg">
+                    <p class="text-sm">Noch keine Zeitblöcke.</p>
+                    <button onclick="addZeitblock('${state.selectedProbe}')" class="btn btn-outline btn-sm mt-2">Ersten Zeitblock anlegen</button>
+                  </div>
+                ` : `
+                  <div class="space-y-3 max-h-[28rem] overflow-y-auto">
+                    ${currentBloecke.map((b, i) => `
+                      <div class="card p-3" style="border-left:4px solid #14b8a6;">
+                        <div class="flex items-center gap-2 mb-2">
+                          <span class="text-xs text-gray-400 font-medium">Block ${i + 1}</span>
+                          <input type="time" value="${b.von || ''}" onchange="updateZeitblockZeit('${state.selectedProbe}','${b.id}','von',this.value)" class="text-sm" style="width:auto;padding:2px 6px;">
+                          <span class="text-gray-400">–</span>
+                          <input type="time" value="${b.bis || ''}" onchange="updateZeitblockZeit('${state.selectedProbe}','${b.id}','bis',this.value)" class="text-sm" style="width:auto;padding:2px 6px;">
+                          <button onclick="deleteZeitblock('${state.selectedProbe}','${b.id}')" class="ml-auto text-red-400 hover:text-red-600" title="Zeitblock löschen">🗑️</button>
                         </div>
-                        <div class="flex items-center gap-2">
-                          ${s.istGeplant ? '<span class="text-teal-600 font-bold">✓</span>' : ''}
-                          ${s.status === 'gruen' ? '<span class="tag tag-green text-xs">✓</span>' : s.status === 'orange' ? '<span class="tag tag-orange text-xs">⚠️</span>' : '<span class="tag tag-red text-xs">✕</span>'}
+                        <div class="mb-2">
+                          ${(b.szenen || []).length > 0 ? (b.szenen || []).map(sid => szeneChip(sid, state.selectedProbe, b.id)).join('') : '<span class="text-xs text-gray-400">Noch keine Szenen in diesem Block</span>'}
+                        </div>
+                        <div class="flex gap-2">
+                          <select onchange="if(this.value){addSzeneToZeitblock('${state.selectedProbe}','${b.id}',this.value);this.value='';}" class="text-xs flex-1">
+                            <option value="">+ Szene…</option>
+                            ${szenen.map(s => `<option value="${s.id}">${escapeHtml(s.nummer || '')} ${escapeHtml(s.name || s.szene || '')}</option>`).join('')}
+                          </select>
+                          ${szenenbloeckeAll.length > 0 ? `
+                          <select onchange="if(this.value){addSzenenblockToZeitblock('${state.selectedProbe}','${b.id}',this.value);this.value='';}" class="text-xs flex-1">
+                            <option value="">+ Szenenblock…</option>
+                            ${szenenbloeckeAll.map((blk, idx) => `<option value="${blk.id}">Block ${idx + 1}: ${escapeHtml((blk.besetzung || []).join(', ') || '—')} (${blk.sceneCount})</option>`).join('')}
+                          </select>` : ''}
                         </div>
                       </div>
-                      ${s.fehlend.length > 0 ? `<div class="text-xs text-red-600 mt-1">Fehlt: ${s.fehlend.join(', ')}</div>` : ''}
-                    </div>
-                  `).join('')}
-                </div>
+                    `).join('')}
+                  </div>
+                `}
               `}
             </div>
             
@@ -2188,6 +2229,20 @@
                         ${getWochentagKurz(item.probe.datum)}, ${formatDatumKurz(item.probe.datum)} 
                         <span class="font-normal text-gray-500">${item.probe.anfangszeit || ''} - ${item.probe.endzeit || ''}</span>
                       </div>
+                      ${item.bloecke ? `
+                        <div class="space-y-2">
+                          ${item.bloecke.map((b, bi) => `
+                            <div class="bg-gray-50 rounded p-2">
+                              <div class="text-xs font-semibold text-teal-700 mb-1">${(b.von || '?')}–${(b.bis || '?')} <span class="text-gray-400 font-normal">Block ${bi + 1}</span></div>
+                              ${(b.szenen || []).length > 0 ? (b.szenen || []).map(sid => {
+                                const sz = szenenById[sid]; if (!sz) return '';
+                                const beteiligte = getBeteiligte(sz);
+                                return `<div class="text-sm pl-2"><span class="font-medium">${sz.nummer ? escapeHtml(sz.nummer) + ': ' : ''}${escapeHtml(sz.name || sz.szene || '')}</span> <span class="text-xs text-gray-500">${beteiligte.length > 0 ? escapeHtml(beteiligte.join(', ')) : 'Alle'}</span></div>`;
+                              }).join('') : '<div class="text-xs text-gray-400 pl-2">keine Szenen</div>'}
+                            </div>
+                          `).join('')}
+                        </div>
+                      ` : `
                       <div class="space-y-1">
                         ${item.szenen.map(sz => {
                           const beteiligte = getBeteiligte(sz);
@@ -2201,7 +2256,7 @@
                             </div>
                           `;
                         }).join('')}
-                      </div>
+                      </div>`}
                     </div>
                   `).join('')}
                 </div>
@@ -2223,11 +2278,164 @@
       `;
     }
 
-    function selectProbe(probeId) { 
-      state.selectedProbe = probeId ? String(probeId) : null; 
-      render(); 
+    // ============================================
+    // SZENENBLÖCKE (Szenen mit gleicher Besetzung, aus Rebu)
+    // ============================================
+    function renderSzenenbloecke() {
+      const bloecke = getData(KEYS.szenenbloecke);
+      const szenen = getData(KEYS.szenen);
+      const probedaten = sortByDatum(getData(KEYS.probedaten));
+      const heute = new Date(); heute.setHours(0, 0, 0, 0);
+      const zukunftigeProben = probedaten.filter(p => { const d = parseDatum(p.datum); return d && d >= heute; });
+      const szeneById = id => szenen.find(s => s.id === id);
+
+      if (!bloecke || bloecke.length === 0) {
+        return `
+          <div class="card p-8 text-center text-gray-400">
+            <div class="text-5xl mb-3">🧩</div>
+            <h2 class="text-lg font-semibold text-gray-600 mb-2">Noch keine Szenenblöcke</h2>
+            <p class="text-sm max-w-md mx-auto">Szenenblöcke fassen Szenen mit gleicher Besetzung zusammen. Sie entstehen beim Laden einer Austausch-Datei aus Rebu (Datei → Austausch-Datei laden…).</p>
+          </div>`;
+      }
+
+      const mitMehr = bloecke.filter(b => b.sceneCount > 1).length;
+      const probeSelect = `
+        <div class="card p-4 mb-4 flex flex-wrap items-center gap-3">
+          <span class="text-sm text-gray-600">Ganzen Block in eine Probe übernehmen:</span>
+          ${zukunftigeProben.length === 0
+            ? '<span class="text-sm text-gray-400 italic">Keine kommenden Proben – lege zuerst Probetermine an.</span>'
+            : `<select onchange="selectProbe(this.value)" class="text-sm" style="max-width:360px;">
+                <option value="">-- Probe wählen --</option>
+                ${zukunftigeProben.map(p => `<option value="${p.id}" ${String(state.selectedProbe) === String(p.id) ? 'selected' : ''}>${formatDatumKurz(p.datum)} (${getWochentagKurz(p.datum)}) ${p.anfangszeit || ''} – ${escapeHtml(p.artDerProbe || '')}</option>`).join('')}
+              </select>`}
+        </div>`;
+
+      const bloeckeHtml = bloecke.map((b, i) => {
+        const scenesHtml = b.sceneIds.map(sid => {
+          const s = szeneById(sid);
+          if (!s) return '';
+          return `<span class="inline-block bg-white border border-gray-200 rounded px-2 py-0.5 text-xs mr-1 mb-1">${escapeHtml(s.nummer || '')} ${escapeHtml(s.name || s.szene || '')}</span>`;
+        }).join('');
+        const besetzungHtml = (b.besetzung || []).map(n => `<span class="inline-block bg-teal-100 text-teal-800 rounded px-2 py-0.5 text-xs mr-1 mb-1">${escapeHtml(n)}</span>`).join('') || '<span class="text-xs text-gray-400">keine Besetzung</span>';
+        const planBtn = state.selectedProbe
+          ? `<button onclick="planeBlock('${b.id}')" class="btn btn-primary btn-sm">→ in gewählte Probe</button>`
+          : `<span class="text-xs text-gray-400">Probe oben wählen</span>`;
+        return `
+          <div class="card p-4 mb-3">
+            <div class="flex justify-between items-center mb-2">
+              <h3 class="text-sm font-semibold">Block ${i + 1} <span class="text-gray-400 font-normal">· ${b.sceneCount} ${b.sceneCount === 1 ? 'Szene' : 'Szenen'}</span></h3>
+              ${planBtn}
+            </div>
+            <div class="mb-2">${besetzungHtml}</div>
+            <div>${scenesHtml}</div>
+          </div>`;
+      }).join('');
+
+      return `
+        <div class="fade-in">
+          <p class="text-sm text-gray-500 mb-4">Szenen mit exakt gleicher Besetzung, aus Rebu übernommen. ${mitMehr} von ${bloecke.length} ${bloecke.length === 1 ? 'Block bündelt' : 'Blöcken bündeln'} mehr als eine Szene und lassen sich am Stück proben.</p>
+          ${probeSelect}
+          ${bloeckeHtml}
+        </div>`;
     }
-    
+
+    async function planeBlock(blockId) {
+      if (!state.selectedProbe) { alert('Bitte zuerst oben eine Probe wählen.'); return; }
+      const bloecke = getData(KEYS.szenenbloecke);
+      const block = bloecke.find(b => b.id === blockId);
+      if (!block) return;
+      const current = getProbenplanungForProbe(state.selectedProbe).slice();
+      let added = 0;
+      block.sceneIds.forEach(sid => { if (!current.includes(sid)) { current.push(sid); added++; } });
+      await saveProbenplanungForProbe(state.selectedProbe, current, null, null);
+      render();
+    }
+
+    function selectProbe(probeId) {
+      state.selectedProbe = probeId ? String(probeId) : null;
+      render();
+    }
+
+    // ============================================
+    // ZEITBLÖCKE innerhalb einer Probe (genaue Zeiten je Block)
+    // ============================================
+    function getPlanBloecke(probeId) {
+      const pp = getData(KEYS.probenplanung);
+      const e = pp.find(p => String(p.probeId) === String(probeId));
+      return (e && Array.isArray(e.bloecke)) ? e.bloecke : [];
+    }
+
+    function saveProbeBloecke(probeId, bloecke) {
+      const pp = getData(KEYS.probenplanung);
+      // szenen als Vereinigung aller Block-Szenen mitführen (für Export & Übersicht)
+      const union = [];
+      bloecke.forEach(b => (b.szenen || []).forEach(sid => { if (!union.includes(sid)) union.push(sid); }));
+      const idx = pp.findIndex(p => String(p.probeId) === String(probeId));
+      if (idx !== -1) {
+        if (bloecke.length === 0 && union.length === 0) {
+          pp.splice(idx, 1);
+        } else {
+          pp[idx].bloecke = bloecke;
+          pp[idx].szenen = union;
+        }
+      } else if (bloecke.length > 0) {
+        pp.push({ id: genId(), probeId: String(probeId), bloecke: bloecke, szenen: union });
+      }
+      setData(KEYS.probenplanung, pp);
+    }
+
+    function addZeitblock(probeId) {
+      const bloecke = getPlanBloecke(probeId).slice();
+      const probe = getData(KEYS.probedaten).find(p => String(p.id) === String(probeId));
+      const von = bloecke.length ? (bloecke[bloecke.length - 1].bis || probe?.anfangszeit || '') : (probe?.anfangszeit || '');
+      const bis = probe?.endzeit || '';
+      bloecke.push({ id: genId(), von: von, bis: bis, szenen: [] });
+      saveProbeBloecke(probeId, bloecke);
+      render();
+    }
+
+    function updateZeitblockZeit(probeId, blockId, feld, value) {
+      const bloecke = getPlanBloecke(probeId).map(b => b.id === blockId ? { ...b, [feld]: value } : b);
+      saveProbeBloecke(probeId, bloecke);
+      render();
+    }
+
+    function deleteZeitblock(probeId, blockId) {
+      const bloecke = getPlanBloecke(probeId).filter(b => b.id !== blockId);
+      saveProbeBloecke(probeId, bloecke);
+      render();
+    }
+
+    function addSzeneToZeitblock(probeId, blockId, sceneId) {
+      const bloecke = getPlanBloecke(probeId).map(b => {
+        if (b.id !== blockId) return b;
+        const sz = (b.szenen || []).slice();
+        if (!sz.includes(sceneId)) sz.push(sceneId);
+        return { ...b, szenen: sz };
+      });
+      saveProbeBloecke(probeId, bloecke);
+      render();
+    }
+
+    function removeSzeneFromZeitblock(probeId, blockId, sceneId) {
+      const bloecke = getPlanBloecke(probeId).map(b => b.id === blockId ? { ...b, szenen: (b.szenen || []).filter(x => x !== sceneId) } : b);
+      saveProbeBloecke(probeId, bloecke);
+      render();
+    }
+
+    function addSzenenblockToZeitblock(probeId, blockId, szenenblockId) {
+      const sb = getData(KEYS.szenenbloecke).find(x => x.id === szenenblockId);
+      if (!sb) return;
+      const bloecke = getPlanBloecke(probeId).map(b => {
+        if (b.id !== blockId) return b;
+        const sz = (b.szenen || []).slice();
+        (sb.sceneIds || []).forEach(sid => { if (!sz.includes(sid)) sz.push(sid); });
+        return { ...b, szenen: sz };
+      });
+      saveProbeBloecke(probeId, bloecke);
+      render();
+    }
+
     function getProbenplanungForProbe(probeId) {
       if (!probeId) return [];
       const probenplanung = getData(KEYS.probenplanung);
@@ -2468,6 +2676,61 @@
     // ============================================
     // SYSTEM PAGES
     // ============================================
+    function renderHilfe() {
+      const sec = (icon, titel, inhalt) => `
+        <div class="card p-6 mb-4">
+          <h3 class="text-lg font-semibold mb-3 flex items-center gap-2"><span>${icon}</span> ${titel}</h3>
+          <div class="text-sm text-gray-700 leading-relaxed space-y-3">${inhalt}</div>
+        </div>`;
+      return `
+        <div class="fade-in max-w-3xl mx-auto">
+          <div class="text-center mb-6">
+            <div class="text-5xl mb-3">❓</div>
+            <h2 class="text-2xl font-bold text-gray-800">Willkommen bei N!NA-Propla</h2>
+            <p class="text-gray-500 mt-2">Der Probeplaner für dein Theaterprojekt. Diese Anleitung führt dich durch alles, was du damit tun kannst.</p>
+          </div>
+
+          ${sec('🎯', 'Wofür Propla da ist', `
+            <p>Propla hilft dir, Proben zu planen: Es weiss, welche Figur in welcher Szene vorkommt, wer welche Rolle spielt und wer wann kann. Daraus baust du für jeden Probetermin einen Plan – wer wird an diesem Abend gebraucht, welche Szenen probt ihr, und in welcher Reihenfolge.</p>
+            <p>Alles wird lokal in deinem Browser gespeichert. Es braucht keine Anmeldung und kein Internet. Wichtig: Sichere dein Projekt darum regelmässig als Backup (siehe weiter unten).</p>`)}
+
+          ${sec('🚀', 'Erste Schritte', `
+            <p>Öffne oben links das <strong>Datei-Menü</strong> und wähle <strong>«Neues Projekt…»</strong>, um ein Stück anzulegen. Ein bestehendes Projekt öffnest du über <strong>«Öffnen…»</strong>. Über den Projektnamen kannst du jederzeit zwischen mehreren Produktionen wechseln.</p>
+            <p>Danach füllst du der Reihe nach die Grundlagen: erst wer mitspielt, dann die Szenen, dann die Termine – und zuletzt planst du im Probeplan.</p>`)}
+
+          ${sec('👥', 'Wer mitspielt (Menü «Besetzung»)', `
+            <p><strong>Figuren</strong> sind die Rollen des Stücks (Marthe, Melk …). <strong>Ensemble</strong> sind die realen Schauspieler:innen mit Kontakt und Adresse. Unter <strong>Besetzung</strong> verbindest du beides: Welche Person spielt welche Rolle. Diese Zuordnung ist wichtig, denn nur so weiss Propla, wer für eine Szene gebraucht wird.</p>
+            <p>Im <strong>Künstlerischen Team</strong> erfasst du Regie, Bühne, Licht, Ton und so weiter. Die <strong>Szenen</strong> schliesslich tragen ihre Besetzung als Hauptfiguren – so ist klar, wer in welcher Szene auf der Bühne steht.</p>`)}
+
+          ${sec('📅', 'Termine und Verfügbarkeiten (Menü «Planung»)', `
+            <p>Bei den <strong>Probedaten</strong> legst du die Probetermine an. Trag einfach das ganze Zeitfenster ein, das an diesem Tag zur Verfügung steht – zum Beispiel 19 bis 22 Uhr. Die genauen Zeiten der einzelnen Probeblöcke bestimmst du erst später im Probeplan.</p>
+            <p>Unter <strong>Absenzen</strong> hältst du fest, wann jemand nicht kann. Unter <strong>Team-Verfügbarkeit</strong>, wann Team-Mitglieder da sind. Beides fliesst automatisch in die Planung ein.</p>`)}
+
+          ${sec('🗓️', 'Der Probeplan – das Herzstück', `
+            <p>Wähle links einen Probetermin. Du siehst sofort, wer an diesem Abend fehlt und welches Team verfügbar ist.</p>
+            <p>In der Mitte teilst du den Abend mit <strong>«+ Zeitblock»</strong> in Blöcke mit genauen Zeiten – etwa 19–20 Uhr, 20–21.15 Uhr, 21.15–22 Uhr. Jedem Block gibst du seine Szenen: entweder einzeln über <strong>«+ Szene…»</strong>, oder gleich einen ganzen <strong>Szenenblock</strong> (Szenen mit derselben Besetzung) über <strong>«+ Szenenblock…»</strong>. Fehlt bei einer Szene jemand, der gebraucht wird, erscheint sie gelb mit einem ⚠️ – du siehst also sofort, wo es klemmt.</p>
+            <p>Rechts wächst dein <strong>Gesamtplan</strong> über alle Termine, sauber nach Zeitblöcken gegliedert. Von dort kannst du ihn auch als formatierte Liste exportieren.</p>`)}
+
+          ${sec('🧩', 'Szenenblöcke', `
+            <p>Unter <strong>Planung → Szenenblöcke</strong> siehst du Szenen mit exakt gleicher Besetzung zusammengefasst. Das hilft beim Planen: «Heute Abend proben wir zuerst alles mit Marthe und Melk.» Diese Blöcke lassen sich mit einem Klick in einen Zeitblock übernehmen. Sie entstehen automatisch, wenn du ein Projekt aus Rebu einliest (siehe unten).</p>`)}
+
+          ${sec('📋', 'Listen und Export', `
+            <p>Unter <strong>Listen-Export</strong> gibst du jede Rubrik – Probetermine, Ensemble, Team, Figuren, Besetzung, Szenen, Absenzen – als formatierte Excel-Liste aus. Ebenso den fertigen Probeplan als übersichtliches Dokument zum Ausdrucken oder Verteilen.</p>`)}
+
+          ${sec('💾', 'Daten sichern', `
+            <p>Deine Daten liegen nur in diesem Browser. Speichere darum regelmässig eine <strong>Sicherungskopie</strong> über das Datei-Menü (<strong>«Backup exportieren»</strong>). Legst du diese Datei auf Google Drive oder einen Stick, kannst du dein Projekt auf einem anderen Gerät über <strong>«Backup wiederherstellen…»</strong> weiterführen.</p>`)}
+
+          ${sec('🔄', 'Zusammenspiel mit Rebu', `
+            <p>Propla ist ein eigenständiges Programm – du kannst damit arbeiten, ohne je eine andere App zu öffnen. Wer aber zusätzlich mit <strong>Rebu</strong> arbeitet, dem Regiebuch aus derselben Werkzeug-Familie, kann beide verbinden: Figuren, Szenen und Besetzung aus Rebu übernimmst du hier über <strong>Datei → «Austausch-Datei laden…»</strong>. Umgekehrt gibst du deine Propla-Daten über <strong>«Für Rebu / Werkbank»</strong> weiter.</p>
+            <p>Beim Einlesen übernimmt Propla alles Neue automatisch. Wo sich etwas widerspricht – eine geänderte Mailadresse, eine gestrichene Figur – hält es an und fragt Feld für Feld nach, sodass du selbst entscheidest, was übernommen wird. So bleiben Regiebuch und Probeplan aufeinander abgestimmt, ohne dass etwas ungefragt überschrieben wird.</p>`)}
+
+          <div class="card p-6 mb-4" style="background:linear-gradient(135deg,#f5f3ff,#ecfeff);border-color:#c4b5fd;">
+            <h3 class="text-lg font-semibold mb-2">Über Propla</h3>
+            <p class="text-sm text-gray-700 leading-relaxed">Propla ist Teil der N!NA-Theaterwerkzeuge und wird zusammen mit den anderen Apps auf <a href="https://dramera.ch" target="_blank" rel="noopener" style="color:#7c3aed;text-decoration:underline;">dramera.ch</a> bereitgestellt. Entwickelt wurde die App von <strong>Ueli Blum</strong>. Für Fragen, Rückmeldungen oder Anregungen erreichst du ihn über <a href="https://ueliblum.ch/kontakt/" target="_blank" rel="noopener" style="color:#7c3aed;text-decoration:underline;">ueliblum.ch/kontakt</a>.</p>
+          </div>
+        </div>`;
+    }
+
     function renderListen() {
       const counts = { probedaten: getData(KEYS.probedaten).length, ensemble: getData(KEYS.ensemble).length, team: getData(KEYS.kuenstlerischesTeam).length, teamVerfuegbarkeit: getData(KEYS.teamVerfuegbarkeit).length, figuren: getData(KEYS.figuren).length, zuordnungen: getData(KEYS.zuordnungen).length, szenen: getData(KEYS.szenen).length, absenzen: getData(KEYS.absenzen).length };
       const labels = { probedaten: { icon: '📅', name: 'Probetermine' }, ensemble: { icon: '👥', name: 'Ensemble' }, team: { icon: '🎬', name: 'Künstl. Team' }, teamVerfuegbarkeit: { icon: '📆', name: 'Team-Verfügbarkeit' }, figuren: { icon: '🎭', name: 'Figuren' }, zuordnungen: { icon: '🔗', name: 'Besetzung' }, szenen: { icon: '📑', name: 'Szenen' }, absenzen: { icon: '🚫', name: 'Absenzen' } };
@@ -2833,6 +3096,18 @@
     // NINA-EXCHANGE v3.0 IMPORT PREVIEW
     // ============================================
     let pendingNinaImport = null;
+    let pendingNinaConflicts = [];
+
+    // Personen aus einer NINA-Datei holen. Kanonisch ist das Feld `persons`
+    // (Werkbank/Propla, neu auch Rebu). Ältere Rebu-Dateien tragen die Personen
+    // in `ensemble`/`team` – die werden hier ersatzweise übernommen, damit
+    // Ensemble und Besetzung auch von dort sauber ankommen.
+    function ninaPersons(data) {
+      if (Array.isArray(data.persons) && data.persons.length > 0) return data.persons;
+      const fromEnsemble = (data.ensemble || []).map(p => ({ ...p, category: 'ensemble', phone: p.phone || p.telefon || '', function: p.role || p.function || 'Schauspiel' }));
+      const fromTeam = (data.team || []).map(p => ({ ...p, category: 'artistic_team', phone: p.phone || p.telefon || '', function: p.function || p.funktion || '' }));
+      return [...fromEnsemble, ...fromTeam];
+    }
     
     function showNinaImportPreview(data, version, source) {
       pendingNinaImport = data;
@@ -2890,7 +3165,7 @@
       }
       
       // Ensemble analysieren
-      const ensemblePersons = (data.persons || []).filter(p => p.category === 'ensemble' || !p.category);
+      const ensemblePersons = ninaPersons(data).filter(p => p.category === 'ensemble' || !p.category);
       for (const person of ensemblePersons) {
         const name = (person.name || '').toLowerCase();
         const existing = existingEnsemble.find(e => (e.name || '').toLowerCase() === name);
@@ -2902,7 +3177,7 @@
       }
       
       // Team analysieren
-      const teamPersons = (data.persons || []).filter(p => p.category === 'artistic_team');
+      const teamPersons = ninaPersons(data).filter(p => p.category === 'artistic_team');
       for (const person of teamPersons) {
         const name = (person.name || '').toLowerCase();
         const existing = existingTeam.find(t => (t.name || '').toLowerCase() === name);
@@ -2938,7 +3213,7 @@
       if ((data.figures || []).length > 0) {
         html += `<div class="card p-4 mb-3" style="border-left: 4px solid #3b82f6;">
           <div class="flex items-center gap-2 mb-2"><span class="text-lg">👤</span><strong>Figuren</strong>
-          ${figurenReadOnly ? '<span style="background:#fef3c7;color:#92400e;padding:2px 8px;border-radius:4px;font-size:11px;">🔒 read-only in Propla</span>' : ''}</div>`;
+          ${figurenReadOnly ? '<span style="background:#dbeafe;color:#1e40af;padding:2px 8px;border-radius:4px;font-size:11px;">aus ${source}</span>' : ''}</div>`;
         if (analysis.figuren.neu.length > 0)
           html += `<div class="text-sm text-green-700">✅ <strong>${analysis.figuren.neu.length} neu:</strong> ${makeList(analysis.figuren.neu, 5)}</div>`;
         if (analysis.figuren.aktualisiert.length > 0)
@@ -2952,7 +3227,7 @@
       if ((data.scenes || []).length > 0) {
         html += `<div class="card p-4 mb-3" style="border-left: 4px solid #8b5cf6;">
           <div class="flex items-center gap-2 mb-2"><span class="text-lg">🎬</span><strong>Szenen</strong>
-          ${figurenReadOnly ? '<span style="background:#fef3c7;color:#92400e;padding:2px 8px;border-radius:4px;font-size:11px;">🔒 read-only in Propla</span>' : ''}</div>`;
+          ${figurenReadOnly ? '<span style="background:#dbeafe;color:#1e40af;padding:2px 8px;border-radius:4px;font-size:11px;">aus ${source}</span>' : ''}</div>`;
         if (analysis.szenen.neu.length > 0)
           html += `<div class="text-sm text-green-700">✅ <strong>${analysis.szenen.neu.length} neu:</strong> ${makeList(analysis.szenen.neu, 5)}</div>`;
         if (analysis.szenen.aktualisiert.length > 0)
@@ -2998,12 +3273,10 @@
         </div>`;
       }
       
-      // Info-Box Souveränität
-      if (figurenReadOnly) {
-        html += `<div class="card p-3 mb-4" style="background: #eff6ff; border-color: #93c5fd;">
-          <div class="text-sm text-blue-800">ℹ️ <strong>Souveränitätsprinzip:</strong> Figuren und Szenen aus ${source} werden als read-only importiert. Propla kann sie anzeigen und für die Planung verwenden, aber nicht ändern.</div>
-        </div>`;
-      }
+      // Info-Box: neues Abgleich-Modell
+      html += `<div class="card p-3 mb-4" style="background: #eff6ff; border-color: #93c5fd;">
+        <div class="text-sm text-blue-800">ℹ️ Neue Einträge und leere Felder werden automatisch übernommen. Wo sich etwas widerspricht (z.B. eine geänderte Adresse) oder etwas in ${source} gestrichen wurde, fragt Propla nach dem Import Feld für Feld nach – du entscheidest, was übernommen wird.</div>
+      </div>`;
       
       html += `<div class="flex justify-end gap-3 mt-4">
             <button onclick="closeNinaPreview()" class="btn btn-outline">Abbrechen</button>
@@ -3026,7 +3299,123 @@
       if (modal) modal.remove();
       pendingNinaImport = null;
     }
-    
+
+    // ============================================
+    // WIDERSPRUCHS-RÜCKFRAGE (feldweise entscheiden)
+    // ============================================
+    function showNinaConflictModal() {
+      const conflicts = pendingNinaConflicts;
+      if (!conflicts || conflicts.length === 0) return;
+      const catLabel = { figuren: 'Figur', szenen: 'Szene', ensemble: 'Person', team: 'Team' };
+
+      // Nach Eintrag gruppieren
+      const groups = {};
+      conflicts.forEach((c, i) => {
+        const k = c.category + '|' + c.localId;
+        if (!groups[k]) groups[k] = { label: c.entityLabel, cat: c.category, items: [] };
+        groups[k].items.push({ c, i });
+      });
+
+      let rows = '';
+      Object.values(groups).forEach(g => {
+        rows += `<div class="card p-3 mb-2"><div class="font-semibold text-sm mb-2">${catLabel[g.cat] || ''}: ${escapeHtml(g.label || '—')}</div>`;
+        g.items.forEach(({ c, i }) => {
+          if (c.type === 'delete') {
+            rows += `<label class="flex items-start gap-2 py-1 text-sm cursor-pointer">
+              <input type="checkbox" data-idx="${i}" class="mt-1">
+              <span class="flex-1"><span class="text-red-600 font-medium">${escapeHtml(c.fieldLabel)}</span> – auch hier entfernen?</span>
+            </label>`;
+          } else {
+            rows += `<label class="flex items-start gap-2 py-1 text-sm cursor-pointer">
+              <input type="checkbox" data-idx="${i}" class="mt-1">
+              <span class="flex-1"><span class="text-gray-500">${escapeHtml(c.fieldLabel)}:</span>
+              <span class="line-through text-gray-400">${escapeHtml(c.current)}</span>
+              <span class="text-gray-400">→</span>
+              <span class="text-teal-700 font-medium">${escapeHtml(c.incoming)}</span></span>
+            </label>`;
+          }
+        });
+        rows += `</div>`;
+      });
+
+      const html = `<div class="modal" style="z-index:10000" onclick="if(event.target===this) closeNinaConflict()">
+        <div class="modal-content p-6" style="max-width:640px;max-height:85vh;overflow-y:auto;">
+          <div class="flex justify-between items-center mb-2">
+            <h3 class="text-lg font-semibold" style="color:#b45309;">⚠️ Unterschiede beim Abgleich</h3>
+            <button onclick="closeNinaConflict()" class="text-gray-400 hover:text-gray-600 text-xl">&times;</button>
+          </div>
+          <p class="text-sm text-gray-500 mb-3">Diese Einträge unterscheiden sich. Häkchen setzen bei allem, was du übernehmen willst – alles Übrige bleibt, wie es ist.</p>
+          <div class="mb-3"><button onclick="toggleAllNinaConflicts()" class="btn btn-outline btn-sm">Alle auswählen / abwählen</button></div>
+          ${rows}
+          <div class="flex justify-end gap-3 mt-4">
+            <button onclick="closeNinaConflict()" class="btn btn-outline">Nichts ändern</button>
+            <button onclick="applyNinaConflicts()" class="btn" style="background:linear-gradient(135deg,#8b5cf6,#14b8a6);color:white;">Ausgewählte übernehmen</button>
+          </div>
+        </div>
+      </div>`;
+      const modal = document.createElement('div');
+      modal.id = 'ninaConflictModal';
+      modal.innerHTML = html;
+      document.body.appendChild(modal);
+    }
+
+    function closeNinaConflict() {
+      const m = document.getElementById('ninaConflictModal');
+      if (m) m.remove();
+      pendingNinaConflicts = [];
+    }
+
+    function toggleAllNinaConflicts() {
+      const m = document.getElementById('ninaConflictModal');
+      if (!m) return;
+      const boxes = m.querySelectorAll('input[type="checkbox"][data-idx]');
+      const anyUnchecked = Array.from(boxes).some(b => !b.checked);
+      boxes.forEach(b => { b.checked = anyUnchecked; });
+    }
+
+    function applyNinaConflicts() {
+      const m = document.getElementById('ninaConflictModal');
+      if (!m || !state.projekt) { closeNinaConflict(); return; }
+      const projektId = state.projekt.id;
+      const keyByCat = { figuren: KEYS.figuren, szenen: KEYS.szenen, ensemble: KEYS.ensemble, team: KEYS.kuenstlerischesTeam };
+      const chosen = [];
+      m.querySelectorAll('input[type="checkbox"][data-idx]').forEach(b => {
+        if (b.checked) { const c = pendingNinaConflicts[parseInt(b.dataset.idx, 10)]; if (c) chosen.push(c); }
+      });
+
+      const arrays = {};
+      const getArr = cat => { if (!arrays[cat]) arrays[cat] = load(keyByCat[cat](projektId), []); return arrays[cat]; };
+      const touched = {};
+
+      chosen.forEach(c => {
+        const arr = getArr(c.category);
+        if (c.type === 'delete') {
+          const idx = arr.findIndex(o => o.id === c.localId);
+          if (idx !== -1) { arr.splice(idx, 1); touched[c.category] = true; }
+          return;
+        }
+        const obj = arr.find(o => o.id === c.localId);
+        if (!obj) return;
+        if (c.field === 'name') {
+          obj.name = c.incoming;
+          if (c.category === 'figuren') obj.figur = c.incoming;
+          if (c.category === 'szenen') obj.szene = c.incoming;
+        } else if (c.field === 'adresse' && c.incomingParts) {
+          obj.strasse = c.incomingParts.strasse; obj.hausnummer = c.incomingParts.hausnummer;
+          obj.plz = c.incomingParts.plz; obj.ort = c.incomingParts.ort;
+        } else {
+          obj[c.field] = c.incoming;
+        }
+        touched[c.category] = true;
+      });
+
+      Object.keys(touched).forEach(cat => save(keyByCat[cat](projektId), arrays[cat]));
+      const n = chosen.length;
+      closeNinaConflict();
+      render();
+      alert(n > 0 ? n + ' Änderung(en) übernommen.' : 'Nichts geändert.');
+    }
+
     function executeNinaImport() {
       const data = pendingNinaImport;
       if (!data || !state.projekt) return;
@@ -3034,7 +3423,29 @@
       const projektId = state.projekt.id;
       const source = data.exportedFrom || 'unknown';
       const figurenReadOnly = source === 'werkbank' || source === 'rebu';
-      
+
+      // Widersprüche sammeln, statt still zu überschreiben. Leere Felder werden
+      // automatisch gefüllt; wenn beide Seiten einen anderen Wert haben, kommt
+      // der Fall in die Rückfrage und du entscheidest je Feld selbst.
+      const conflicts = [];
+      function mergeField(category, obj, field, incomingRaw, fieldLabel, entityLabel, setter) {
+        const incoming = (incomingRaw == null) ? '' : String(incomingRaw);
+        const current = (obj[field] == null) ? '' : String(obj[field]);
+        if (!incoming || incoming === current) return false;
+        if (!current) { (setter || ((o, v) => { o[field] = v; }))(obj, incoming); return true; }
+        conflicts.push({ category, localId: obj.id, field, fieldLabel, entityLabel: entityLabel || '', current, incoming });
+        return false;
+      }
+      function mergeAddress(category, obj, person, entityLabel) {
+        const inc = person.address || {};
+        const incParts = { strasse: inc.street || '', hausnummer: inc.number || '', plz: inc.zip || '', ort: inc.city || '' };
+        const incStr = [incParts.strasse, incParts.hausnummer, incParts.plz, incParts.ort].filter(Boolean).join(' ').trim();
+        const curStr = [obj.strasse, obj.hausnummer, obj.plz, obj.ort].filter(Boolean).join(' ').trim();
+        if (!incStr || incStr === curStr) return;
+        if (!curStr) { obj.strasse = incParts.strasse; obj.hausnummer = incParts.hausnummer; obj.plz = incParts.plz; obj.ort = incParts.ort; return; }
+        conflicts.push({ category, localId: obj.id, field: 'adresse', fieldLabel: 'Adresse', entityLabel: entityLabel || '', current: curStr, incoming: incStr, incomingParts: incParts });
+      }
+
       let importedFiguren = 0, skippedFiguren = 0, updatedFiguren = 0;
       let importedSzenen = 0, skippedSzenen = 0, updatedSzenen = 0;
       let importedEnsemble = 0, importedTeam = 0;
@@ -3064,13 +3475,17 @@
       
       for (const fig of (data.figures || [])) {
         const name = fig.name || '';
-        const existIdx = newFiguren.findIndex(f => (f.figur || f.name || '').toLowerCase() === name.toLowerCase());
-        
+        // Zuerst über die stabile Kennung (_ninaId) verknüpfen; nur für die
+        // erstmalige Verknüpfung ersatzweise über den Namen. So überlebt eine
+        // Umbenennung: derselbe Eintrag wird aktualisiert statt verdoppelt.
+        let existIdx = fig.id ? newFiguren.findIndex(f => f._ninaId && f._ninaId === fig.id) : -1;
+        if (existIdx === -1) existIdx = newFiguren.findIndex(f => !f._ninaId && (f.figur || f.name || '').toLowerCase() === name.toLowerCase());
+
         if (existIdx === -1) {
           const newId = genId();
           figurenIdMap[fig.id] = newId;
           newFiguren.push({
-            id: newId, figur: name, name: name,
+            id: newId, _ninaId: fig.id || null, figur: name, name: name,
             kurzbeschreibung: fig.description || fig.biography || '',
             kuerzel: fig.short_name || '',
             color: fig.color || '',
@@ -3081,49 +3496,62 @@
           importedFiguren++;
         } else {
           figurenIdMap[fig.id] = newFiguren[existIdx].id;
-          // Leere Felder additiv auffüllen
           const existing = newFiguren[existIdx];
+          if (fig.id && !existing._ninaId) existing._ninaId = fig.id;
+          const figLabel = existing.figur || existing.name || name;
+          // Leere Felder füllen, Widersprüche zur Rückfrage sammeln
           let updated = false;
-          if (!existing.kurzbeschreibung && fig.description) { existing.kurzbeschreibung = fig.description; updated = true; }
+          updated = mergeField('figuren', existing, 'name', name, 'Name', figLabel, (o, v) => { o.figur = v; o.name = v; }) || updated;
+          updated = mergeField('figuren', existing, 'kuerzel', fig.short_name, 'Kürzel', figLabel) || updated;
+          updated = mergeField('figuren', existing, 'kurzbeschreibung', fig.description, 'Beschreibung', figLabel) || updated;
           if (!existing.color && fig.color) { existing.color = fig.color; updated = true; }
-          if (!existing.kuerzel && fig.short_name) { existing.kuerzel = fig.short_name; updated = true; }
-          // Source-Markierung setzen wenn von Rebu/Werkbank
           if (figurenReadOnly && !existing._source) { existing._source = source; existing._readOnly = false; updated = true; }
           if (updated) updatedFiguren++; else skippedFiguren++;
         }
       }
       save(KEYS.figuren(projektId), newFiguren);
-      
+
+      // Gestrichene Figuren erkennen: früher verknüpft (_ninaId), aber nicht mehr
+      // in den eingehenden Daten → in der Quelle gelöscht. Zur Entscheidung sammeln.
+      if ((data.figures || []).length > 0) {
+        const incomingFigIds = new Set((data.figures || []).map(f => f.id));
+        newFiguren.forEach(f => {
+          if (f._ninaId && !incomingFigIds.has(f._ninaId)) {
+            conflicts.push({ type: 'delete', category: 'figuren', localId: f.id, fieldLabel: 'in ' + (data.exportedFrom || 'Quelle') + ' gestrichen', entityLabel: f.figur || f.name || '', current: 'vorhanden', incoming: 'entfernen' });
+          }
+        });
+      }
+
       // === SZENEN ===
       const existingSzenen = load(KEYS.szenen(projektId), []);
       const newSzenen = [...existingSzenen];
       const szenenIdMap = {};
       
+      // Hauptfiguren-String aus den Rollen-IDs einer Szene bauen
+      const buildHauptfiguren = (scene) => {
+        if (scene.figures && Array.isArray(scene.figures)) {
+          return scene.figures
+            .map(fId => { const fig = newFiguren.find(f => f.id === figurenIdMap[fId] || f.id === fId); return fig ? (fig.figur || fig.name) : ''; })
+            .filter(Boolean).join(', ');
+        }
+        if (scene.figure_names) return scene.figure_names.join(', ');
+        return '';
+      };
+
       for (const scene of (data.scenes || [])) {
         const name = scene.name || '';
-        const existIdx = newSzenen.findIndex(s => (s.name || s.szene || '').toLowerCase() === name.toLowerCase());
-        
+        // Verknüpfung zuerst über die stabile Kennung, dann ersatzweise Name
+        let existIdx = scene.id ? newSzenen.findIndex(s => s._ninaId && s._ninaId === scene.id) : -1;
+        if (existIdx === -1) existIdx = newSzenen.findIndex(s => !s._ninaId && (s.name || s.szene || '').toLowerCase() === name.toLowerCase());
+
         if (existIdx === -1) {
           const newId = genId();
           szenenIdMap[scene.id] = newId;
-          
-          let hauptfiguren = '';
-          if (scene.figures && Array.isArray(scene.figures)) {
-            hauptfiguren = scene.figures
-              .map(fId => {
-                const fig = newFiguren.find(f => f.id === figurenIdMap[fId] || f.id === fId);
-                return fig ? (fig.figur || fig.name) : '';
-              })
-              .filter(Boolean).join(', ');
-          } else if (scene.figure_names) {
-            hauptfiguren = scene.figure_names.join(', ');
-          }
-          
           newSzenen.push({
-            id: newId, name: name, szene: name,
+            id: newId, _ninaId: scene.id || null, name: name, szene: name,
             nummer: scene.number || String(newSzenen.length + 1),
             beschreibung: scene.description || scene.summary || '',
-            hauptfiguren: hauptfiguren, nebenfiguren: '',
+            hauptfiguren: buildHauptfiguren(scene), nebenfiguren: '',
             ort: scene.location || '', zeit: scene.time || '',
             _source: figurenReadOnly ? source : 'propla',
             _readOnly: false
@@ -3132,31 +3560,58 @@
         } else {
           szenenIdMap[scene.id] = newSzenen[existIdx].id;
           const existing = newSzenen[existIdx];
+          if (scene.id && !existing._ninaId) existing._ninaId = scene.id;
+          const sLabel = existing.name || existing.szene || name;
           let updated = false;
-          if (!existing.beschreibung && (scene.description || scene.summary)) { existing.beschreibung = scene.description || scene.summary; updated = true; }
-          if (!existing.ort && scene.location) { existing.ort = scene.location; updated = true; }
-          if (!existing.zeit && scene.time) { existing.zeit = scene.time; updated = true; }
+          updated = mergeField('szenen', existing, 'name', name, 'Titel', sLabel, (o, v) => { o.name = v; o.szene = v; }) || updated;
+          updated = mergeField('szenen', existing, 'nummer', scene.number, 'Nummer', sLabel) || updated;
+          updated = mergeField('szenen', existing, 'ort', scene.location, 'Ort', sLabel) || updated;
+          updated = mergeField('szenen', existing, 'zeit', scene.time, 'Zeit', sLabel) || updated;
+          updated = mergeField('szenen', existing, 'beschreibung', scene.description || scene.summary, 'Beschreibung', sLabel) || updated;
+          updated = mergeField('szenen', existing, 'hauptfiguren', buildHauptfiguren(scene), 'Besetzung', sLabel) || updated;
           if (figurenReadOnly && !existing._source) { existing._source = source; existing._readOnly = false; updated = true; }
           if (updated) updatedSzenen++; else skippedSzenen++;
         }
       }
       save(KEYS.szenen(projektId), newSzenen);
-      
+
+      // Gestrichene Szenen erkennen (wie bei den Figuren)
+      if ((data.scenes || []).length > 0) {
+        const incomingSceneIds = new Set((data.scenes || []).map(s => s.id));
+        newSzenen.forEach(s => {
+          if (s._ninaId && !incomingSceneIds.has(s._ninaId)) {
+            conflicts.push({ type: 'delete', category: 'szenen', localId: s.id, fieldLabel: 'in ' + (data.exportedFrom || 'Quelle') + ' gestrichen', entityLabel: s.name || s.szene || '', current: 'vorhanden', incoming: 'entfernen' });
+          }
+        });
+      }
+
       // === ENSEMBLE ===
       const existingEnsemble = load(KEYS.ensemble(projektId), []);
       const newEnsemble = [...existingEnsemble];
       const personIdMap = {};
       
-      const ensemblePersons = (data.persons || []).filter(p => p.category === 'ensemble' || !p.category);
+      const ensemblePersons = ninaPersons(data).filter(p => p.category === 'ensemble' || !p.category);
       for (const person of ensemblePersons) {
-        const name = (person.name || '').toLowerCase();
-        const existing = existingEnsemble.find(e => (e.name || '').toLowerCase() === name);
-        if (existing) { personIdMap[person.id] = existing.id; continue; }
-        
+        const nameLc = (person.name || '').toLowerCase();
+        // Verknüpfung zuerst über die stabile Kennung, dann ersatzweise Name
+        let existing = person.id ? existingEnsemble.find(e => e._ninaId && e._ninaId === person.id) : null;
+        if (!existing) existing = existingEnsemble.find(e => !e._ninaId && (e.name || '').toLowerCase() === nameLc);
+        if (existing) {
+          personIdMap[person.id] = existing.id;
+          if (person.id && !existing._ninaId) existing._ninaId = person.id;
+          const pLabel = existing.name || person.name || '';
+          mergeField('ensemble', existing, 'name', person.name, 'Name', pLabel);
+          mergeField('ensemble', existing, 'email', person.email, 'E-Mail', pLabel);
+          mergeField('ensemble', existing, 'telefon', person.phone, 'Telefon', pLabel);
+          mergeField('ensemble', existing, 'funktion', person.function || person.role, 'Funktion', pLabel);
+          mergeAddress('ensemble', existing, person, pLabel);
+          continue;
+        }
+
         const newId = genId();
         personIdMap[person.id] = newId;
         newEnsemble.push({
-          id: newId, name: person.name || '',
+          id: newId, _ninaId: person.id || null, name: person.name || '',
           email: person.email || '', telefon: person.phone || '',
           funktion: person.function || person.role || 'Schauspiel',
           bemerkungen: person.notes || '',
@@ -3167,22 +3622,33 @@
         });
         importedEnsemble++;
       }
-      if (importedEnsemble > 0) save(KEYS.ensemble(projektId), newEnsemble);
+      if (ensemblePersons.length > 0) save(KEYS.ensemble(projektId), newEnsemble);
       
       // === KÜNSTLERISCHES TEAM ===
       const existingTeam = load(KEYS.kuenstlerischesTeam(projektId), []);
       const newTeam = [...existingTeam];
       
-      const teamPersons = (data.persons || []).filter(p => p.category === 'artistic_team');
+      const teamPersons = ninaPersons(data).filter(p => p.category === 'artistic_team');
       for (const person of teamPersons) {
-        const name = (person.name || '').toLowerCase();
-        const existing = existingTeam.find(t => (t.name || '').toLowerCase() === name);
-        if (existing) { personIdMap[person.id] = existing.id; continue; }
-        
+        const nameLc = (person.name || '').toLowerCase();
+        let existing = person.id ? existingTeam.find(t => t._ninaId && t._ninaId === person.id) : null;
+        if (!existing) existing = existingTeam.find(t => !t._ninaId && (t.name || '').toLowerCase() === nameLc);
+        if (existing) {
+          personIdMap[person.id] = existing.id;
+          if (person.id && !existing._ninaId) existing._ninaId = person.id;
+          const pLabel = existing.name || person.name || '';
+          mergeField('team', existing, 'name', person.name, 'Name', pLabel);
+          mergeField('team', existing, 'email', person.email, 'E-Mail', pLabel);
+          mergeField('team', existing, 'telefon', person.phone, 'Telefon', pLabel);
+          mergeField('team', existing, 'funktion', person.function || person.role, 'Funktion', pLabel);
+          mergeAddress('team', existing, person, pLabel);
+          continue;
+        }
+
         const newId = genId();
         personIdMap[person.id] = newId;
         newTeam.push({
-          id: newId, name: person.name || '',
+          id: newId, _ninaId: person.id || null, name: person.name || '',
           email: person.email || '', telefon: person.phone || '',
           funktion: person.function || person.role || '',
           bemerkungen: person.notes || '',
@@ -3193,8 +3659,32 @@
         });
         importedTeam++;
       }
-      if (importedTeam > 0) save(KEYS.kuenstlerischesTeam(projektId), newTeam);
-      
+      if (teamPersons.length > 0) save(KEYS.kuenstlerischesTeam(projektId), newTeam);
+
+      // === SZENENBLÖCKE (v4.0, aus Rebu) ===
+      // Blöcke fassen Szenen mit exakt gleicher Besetzung zusammen. Szenen- und
+      // Rollen-IDs werden auf die lokalen Propla-IDs abgebildet; dazu eine
+      // lesbare Besetzungs-Bezeichnung (bevorzugt Personennamen, sonst Rollen).
+      let importedBloecke = 0;
+      if (Array.isArray(data.scene_blocks)) {
+        const bloecke = data.scene_blocks.map(b => {
+          const sceneIds = (b.scene_ids || [])
+            .map(sid => szenenIdMap[sid] || sid)
+            .filter(lid => newSzenen.some(s => s.id === lid));
+          let besetzung = (b.besetzung_persons || [])
+            .map(pid => { const e = newEnsemble.find(x => x.id === (personIdMap[pid] || pid)); return e ? e.name : ''; })
+            .filter(Boolean);
+          if (besetzung.length === 0) {
+            besetzung = (b.besetzung_figures || [])
+              .map(fid => { const f = newFiguren.find(x => x.id === (figurenIdMap[fid] || fid)); return f ? (f.figur || f.name) : ''; })
+              .filter(Boolean);
+          }
+          return { id: b.id || genId(), sceneIds, besetzung, sceneCount: sceneIds.length, castingBased: !!b.casting_based };
+        }).filter(b => b.sceneIds.length > 0);
+        save(KEYS.szenenbloecke(projektId), bloecke);
+        importedBloecke = bloecke.length;
+      }
+
       // === CASTINGS/ZUORDNUNGEN ===
       const existingZuordnungen = load(KEYS.zuordnungen(projektId), []);
       const newZuordnungen = [...existingZuordnungen];
@@ -3302,10 +3792,12 @@
       if (importedAbsences > 0) msg += `🚫 Absenzen: ${importedAbsences} neu\n`;
       if (importedTeamAvail > 0) msg += `📋 Team-Verfügbarkeit: ${importedTeamAvail} neu\n`;
       
-      if (figurenReadOnly) msg += '\n🔒 Figuren und Szenen sind read-only (Quelle: ' + source + ').';
       if (isCloudMode) msg += '\n☁️ Daten wurden auch in die Cloud synchronisiert.';
-      
+      if (conflicts.length > 0) msg += `\n\n⚠️ ${conflicts.length} Widerspruch(e) gefunden – gleich kannst du Feld für Feld entscheiden, was übernommen wird.`;
+
+      pendingNinaConflicts = conflicts;
       alert(msg);
+      if (conflicts.length > 0) showNinaConflictModal();
     }
     
     // ============================================
