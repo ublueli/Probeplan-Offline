@@ -193,6 +193,146 @@
     const load = (key, def = null) => { try { return JSON.parse(localStorage.getItem(key)) || def; } catch { return def; } };
     const genId = () => 'id_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9);
 
+    // ============================================
+    // MEHRFACH-KONTAKTDATEN (v3.1)
+    // Personen (Ensemble + kuenstlerisches Team) koennen mehrere E-Mail-
+    // Adressen, Telefonnummern und Postadressen haben. Der jeweils erste
+    // Eintrag wird zusaetzlich in die alten Einzelfelder gespiegelt, damit
+    // Cloud-Sync, Excel-Export und N!NA-Austausch unveraendert weiterlaufen.
+    // ============================================
+    const MAIL_TYPEN = ['Privat', 'Arbeit', 'Weitere'];
+    const TEL_TYPEN = ['Mobil', 'Privat', 'Arbeit', 'Weitere'];
+    const ADR_TYPEN = ['Privat', 'Arbeit', 'Weitere'];
+
+    function syncPrimaerkontakt(p) {
+      const a = (p.adressen && p.adressen[0]) || null;
+      p.email = (p.emails && p.emails[0] && p.emails[0].wert) || '';
+      p.telefon = (p.telefone && p.telefone[0] && p.telefone[0].wert) || '';
+      p.strasse = a ? (a.strasse || '') : '';
+      p.hausnummer = a ? (a.hausnummer || '') : '';
+      p.plz = a ? (a.plz || '') : '';
+      p.ort = a ? (a.ort || '') : '';
+      p.land = a ? (a.land || 'Schweiz') : (p.land || 'Schweiz');
+      return p;
+    }
+
+    function normalizePerson(p) {
+      if (!p || typeof p !== 'object') return p;
+      if (!Array.isArray(p.emails)) p.emails = p.email ? [{ typ: 'Privat', wert: String(p.email) }] : [];
+      if (!Array.isArray(p.telefone)) p.telefone = p.telefon ? [{ typ: 'Mobil', wert: String(p.telefon) }] : [];
+      if (!Array.isArray(p.adressen)) {
+        p.adressen = (p.strasse || p.plz || p.ort)
+          ? [{ typ: 'Privat', strasse: p.strasse || '', hausnummer: p.hausnummer || '', plz: p.plz || '', ort: p.ort || '', land: p.land || 'Schweiz' }]
+          : [];
+      }
+      p.emails = p.emails.filter(e => e && String(e.wert || '').trim()).map(e => ({ typ: e.typ || 'Privat', wert: String(e.wert).trim() }));
+      p.telefone = p.telefone.filter(t => t && String(t.wert || '').trim()).map(t => ({ typ: t.typ || 'Mobil', wert: String(t.wert).trim() }));
+      p.adressen = p.adressen
+        .filter(a => a && (String(a.strasse || '').trim() || String(a.plz || '').trim() || String(a.ort || '').trim()))
+        .map(a => ({ typ: a.typ || 'Privat', strasse: String(a.strasse || '').trim(), hausnummer: String(a.hausnummer || '').trim(), plz: String(a.plz || '').trim(), ort: String(a.ort || '').trim(), land: String(a.land || 'Schweiz').trim() }));
+      return syncPrimaerkontakt(p);
+    }
+
+    // Fuer Codepfade, die weiterhin nur die Einzelfelder schreiben (Cloud-Merge,
+    // Konfliktloesung beim N!NA-Import): Einzelfeld gewinnt und wird zum ersten
+    // Listeneintrag; alle weiteren Eintraege bleiben erhalten.
+    function scalarInArrays(p) {
+      if (!p || typeof p !== 'object') return p;
+      if (!Array.isArray(p.emails)) p.emails = [];
+      if (!Array.isArray(p.telefone)) p.telefone = [];
+      if (!Array.isArray(p.adressen)) p.adressen = [];
+      const setzeErst = (arr, wert, typ) => {
+        const w = String(wert || '').trim();
+        if (!w) return;
+        if (arr.length) arr[0] = { ...arr[0], wert: w };
+        else arr.push({ typ, wert: w });
+      };
+      setzeErst(p.emails, p.email, 'Privat');
+      setzeErst(p.telefone, p.telefon, 'Mobil');
+      const adr = { strasse: p.strasse || '', hausnummer: p.hausnummer || '', plz: p.plz || '', ort: p.ort || '', land: p.land || 'Schweiz' };
+      if (adr.strasse || adr.plz || adr.ort) {
+        if (p.adressen.length) p.adressen[0] = { ...p.adressen[0], ...adr };
+        else p.adressen.push({ typ: 'Privat', ...adr });
+      }
+      return normalizePerson(p);
+    }
+
+    const normalizePersons = (liste) => (Array.isArray(liste) ? liste.map(normalizePerson) : liste);
+
+    function normalisiereProjektPersonen(projektId) {
+      if (!projektId) return;
+      [KEYS.ensemble, KEYS.kuenstlerischesTeam].forEach(keyFn => {
+        const key = keyFn(projektId);
+        const daten = load(key, []);
+        if (Array.isArray(daten) && daten.length) save(key, daten.map(scalarInArrays));
+      });
+    }
+
+    function adresseEinzeilig(a) {
+      if (!a) return '';
+      const z1 = [a.strasse, a.hausnummer].filter(Boolean).join(' ');
+      const z2 = [a.plz, a.ort].filter(Boolean).join(' ');
+      const land = a.land && a.land !== 'Schweiz' ? a.land : '';
+      return [z1, z2, land].filter(Boolean).join(', ');
+    }
+    const weitereMails = (p) => (p.emails || []).slice(1).map(e => e.typ + ': ' + e.wert).join('; ');
+    const weitereTelefone = (p) => (p.telefone || []).slice(1).map(t => t.typ + ': ' + t.wert).join('; ');
+    const weitereAdressen = (p) => (p.adressen || []).slice(1).map(a => a.typ + ': ' + adresseEinzeilig(a)).join('; ');
+
+    function kontaktZelle(liste, primaer) {
+      const arr = Array.isArray(liste) ? liste : [];
+      const wert = arr.length ? arr[0].wert : (primaer || '');
+      if (!wert) return '';
+      const rest = arr.slice(1);
+      if (!rest.length) return escapeHtml(wert);
+      const titel = escapeHtml(rest.map(x => x.typ + ': ' + x.wert).join(' | '));
+      return escapeHtml(wert) + ' <span class="tag tag-blue" title="' + titel + '">+' + rest.length + '</span>';
+    }
+    function adressZelle(row) {
+      const arr = Array.isArray(row.adressen) ? row.adressen : [];
+      const erste = arr.length ? arr[0] : ((row.plz || row.ort) ? { plz: row.plz, ort: row.ort } : null);
+      if (!erste) return '';
+      const text = escapeHtml([erste.plz, erste.ort].filter(Boolean).join(' '));
+      const rest = arr.slice(1);
+      if (!rest.length) return text;
+      const titel = escapeHtml(rest.map(a => a.typ + ': ' + adresseEinzeilig(a)).join(' | '));
+      return text + ' <span class="tag tag-blue" title="' + titel + '">+' + rest.length + '</span>';
+    }
+
+    // Excel-/CSV-Import: "Privat: a@b.ch; Arbeit: c@d.ch"
+    function parseWeitereKontakte(text, standardTyp) {
+      return String(text || '').split(/[;\n]/).map(x => x.trim()).filter(Boolean).map(x => {
+        const m = x.match(/^([^:]{1,20}):\s*(.+)$/);
+        return m ? { typ: m[1].trim(), wert: m[2].trim() } : { typ: standardTyp, wert: x };
+      });
+    }
+    // "Arbeit: Bahnhofstrasse 4, 6003 Luzern, Schweiz; ..."
+    function parseWeitereAdressen(text) {
+      return String(text || '').split(/[;\n]/).map(x => x.trim()).filter(Boolean).map(x => {
+        let typ = 'Weitere';
+        const m = x.match(/^([^:]{1,20}):\s*(.+)$/);
+        if (m) { typ = m[1].trim(); x = m[2].trim(); }
+        const teile = x.split(',').map(t => t.trim());
+        const sTeil = teile[0] || '', oTeil = teile[1] || '', land = teile[2] || 'Schweiz';
+        const sm = sTeil.match(/^(.*?)\s+(\d+\s*[a-zA-Z]?)$/);
+        const om = oTeil.match(/^(\d{4,6})\s+(.*)$/);
+        return { typ, strasse: sm ? sm[1].trim() : sTeil, hausnummer: sm ? sm[2].trim() : '', plz: om ? om[1] : '', ort: om ? om[2].trim() : oTeil, land };
+      });
+    }
+
+    // N!NA-Austauschformat
+    const exportKontaktArrays = (person) => ({
+      emails: (person.emails || []).map(e => ({ type: e.typ, value: e.wert })),
+      phones: (person.telefone || []).map(t => ({ type: t.typ, value: t.wert })),
+      addresses: (person.adressen || []).map(a => ({ type: a.typ, street: a.strasse, number: a.hausnummer, zip: a.plz, city: a.ort, country: a.land }))
+    });
+    function ninaKontakteUebernehmen(ziel, person) {
+      if (Array.isArray(person.emails) && person.emails.length) ziel.emails = person.emails.map(e => ({ typ: e.type || e.typ || 'Privat', wert: e.value || e.wert || '' }));
+      if (Array.isArray(person.phones) && person.phones.length) ziel.telefone = person.phones.map(t => ({ typ: t.type || t.typ || 'Mobil', wert: t.value || t.wert || '' }));
+      if (Array.isArray(person.addresses) && person.addresses.length) ziel.adressen = person.addresses.map(a => ({ typ: a.type || a.typ || 'Privat', strasse: a.street || '', hausnummer: a.number || '', plz: a.zip || '', ort: a.city || '', land: a.country || 'Schweiz' }));
+      return normalizePerson(ziel);
+    }
+
     function formatDatum(str) { if (!str) return ''; const d = parseDatum(str); if (!d || isNaN(d.getTime())) return str; return `${d.getDate()}. ${MONATE_KURZ[d.getMonth()]} ${d.getFullYear()}`; }
     function formatDatumKurz(str) { if (!str) return ''; const d = parseDatum(str); if (!d || isNaN(d.getTime())) return str; return `${d.getDate()}.${d.getMonth() + 1}.`; }
     function formatDatumLang(str) { if (!str) return ''; const d = parseDatum(str); if (!d || isNaN(d.getTime())) return str; return `${WOCHENTAGE[d.getDay()]}, ${d.getDate()}. ${MONATE[d.getMonth()]}`; }
@@ -402,20 +542,20 @@
       
       // Personen laden
       const { data: persons } = await db.from('persons').select('*').eq('project_id', cloudId);
-      save(KEYS.ensemble(localId), (persons || []).filter(p => p.category === 'ensemble').map(p => ({
+      save(KEYS.ensemble(localId), normalizePersons((persons || []).filter(p => p.category === 'ensemble').map(p => ({
         id: p.id, name: p.name, funktion: p.function_title || 'Schauspiel',
         email: p.email || '', telefon: p.phone || '',
         strasse: p.address_street || '', hausnummer: p.address_number || '',
         plz: p.address_zip || '', ort: p.address_city || '', land: p.address_country || 'Schweiz',
         bemerkungen: p.notes || ''
-      })));
-      save(KEYS.kuenstlerischesTeam(localId), (persons || []).filter(p => p.category === 'artistic_team').map(p => ({
+      }))));
+      save(KEYS.kuenstlerischesTeam(localId), normalizePersons((persons || []).filter(p => p.category === 'artistic_team').map(p => ({
         id: p.id, name: p.name, funktion: p.function_title || '',
         email: p.email || '', telefon: p.phone || '',
         strasse: p.address_street || '', hausnummer: p.address_number || '',
         plz: p.address_zip || '', ort: p.address_city || '', land: p.address_country || 'Schweiz',
         bemerkungen: p.notes || ''
-      })));
+      }))));
       
       // Proben laden
       const { data: rehearsals } = await db.from('rehearsals').select('*').eq('project_id', cloudId).order('date');
@@ -1262,8 +1402,8 @@
       const type = state.editingType;
       const fields = {
         probedaten: [{ key: 'datum', label: 'Datum', type: 'date' },{ key: 'anfangszeit', label: 'Von', type: 'time' },{ key: 'endzeit', label: 'Bis', type: 'time' },{ key: 'artDerProbe', label: 'Art der Probe', type: 'select', options: PROBENARTEN },{ key: 'ort', label: 'Ort', type: 'text' },{ key: 'anmerkungen', label: 'Anmerkungen', type: 'text' }],
-        ensemble: [{ key: 'name', label: 'Name', type: 'text' },{ key: 'funktion', label: 'Funktion', type: 'text' },{ key: 'email', label: 'E-Mail', type: 'email' },{ key: 'telefon', label: 'Telefon', type: 'tel' },{ key: 'strasse', label: 'Strasse', type: 'text' },{ key: 'hausnummer', label: 'Nr.', type: 'text' },{ key: 'plz', label: 'PLZ', type: 'text' },{ key: 'ort', label: 'Ort', type: 'text' },{ key: 'bemerkungen', label: 'Bemerkungen', type: 'text' }],
-        kuenstlerischesTeam: [{ key: 'name', label: 'Name', type: 'text' },{ key: 'funktion', label: 'Funktion', type: 'select', options: TEAM_FUNKTIONEN },{ key: 'email', label: 'E-Mail', type: 'email' },{ key: 'telefon', label: 'Telefon', type: 'tel' },{ key: 'strasse', label: 'Strasse', type: 'text' },{ key: 'hausnummer', label: 'Nr.', type: 'text' },{ key: 'plz', label: 'PLZ', type: 'text' },{ key: 'ort', label: 'Ort', type: 'text' },{ key: 'bemerkungen', label: 'Bemerkungen', type: 'text' }],
+        ensemble: [{ key: 'name', label: 'Name', type: 'text' },{ key: 'funktion', label: 'Funktion', type: 'text' },{ key: 'bemerkungen', label: 'Bemerkungen', type: 'text' }],
+        kuenstlerischesTeam: [{ key: 'name', label: 'Name', type: 'text' },{ key: 'funktion', label: 'Funktion', type: 'select', options: TEAM_FUNKTIONEN },{ key: 'bemerkungen', label: 'Bemerkungen', type: 'text' }],
         teamVerfuegbarkeit: [{ key: 'teammitglied', label: 'Teammitglied', type: 'text', readonly: true },{ key: 'datum', label: 'Datum', type: 'date' },{ key: 'anfangszeit', label: 'Von', type: 'time' },{ key: 'endzeit', label: 'Bis', type: 'time' },{ key: 'bemerkungen', label: 'Bemerkungen', type: 'text' }],
         figuren: [{ key: 'figur', label: 'Figur', type: 'text' },{ key: 'kurzbeschreibung', label: 'Kurzbeschreibung', type: 'textarea' }],
         szenen: [{ key: 'nummer', label: 'Nr.', type: 'text' },{ key: 'name', label: 'Szene', type: 'text' },{ key: 'beschreibung', label: 'Beschreibung', type: 'textarea' },{ key: 'hauptfiguren', label: 'Hauptfiguren', type: 'text' },{ key: 'nebenfiguren', label: 'Nebenfiguren', type: 'text' }],
@@ -1271,11 +1411,76 @@
         zuordnungen: [{ key: 'figur', label: 'Figur', type: 'text' },{ key: 'schauspieler', label: 'Schauspieler:in', type: 'text' }],
       };
       const typeFields = fields[type] || [];
-      return `<div class="modal" onclick="if(event.target===this) closeModal()"><div class="modal-content p-6" style="max-width: 600px;"><div class="flex justify-between items-center mb-4"><h3 class="text-lg font-semibold">✏️ Bearbeiten</h3><button onclick="closeModal()" class="text-gray-400 hover:text-gray-600 text-xl">&times;</button></div><div class="space-y-4">${typeFields.map(f => `<div><label class="input-label">${f.label}</label>${f.type === 'select' ? `<select id="edit_${f.key}" ${f.readonly ? 'disabled' : ''}><option value="">--</option>${f.options.map(o => `<option value="${o}" ${item[f.key] === o ? 'selected' : ''}>${o}</option>`).join('')}</select>` : f.type === 'textarea' ? `<textarea id="edit_${f.key}" rows="3" ${f.readonly ? 'readonly' : ''}>${escapeHtml(item[f.key] || '')}</textarea>` : `<input type="${f.type}" id="edit_${f.key}" value="${escapeHtml(item[f.key] || '')}" ${f.readonly ? 'readonly' : ''}>`}</div>`).join('')}</div><div class="flex justify-end gap-2 mt-6"><button onclick="closeModal()" class="btn btn-outline">Abbrechen</button><button onclick="saveEdit()" class="btn btn-primary">💾 Speichern</button></div></div></div>`;
+      const istPerson = (type === 'ensemble' || type === 'kuenstlerischesTeam');
+      const kontaktBlock = istPerson ? renderKontaktEditor(item) : '';
+      return `<div class="modal" onclick="if(event.target===this) closeModal()"><div class="modal-content p-6" style="max-width: ${istPerson ? '780px' : '600px'};"><div class="flex justify-between items-center mb-4"><h3 class="text-lg font-semibold">✏️ Bearbeiten</h3><button onclick="closeModal()" class="text-gray-400 hover:text-gray-600 text-xl">&times;</button></div><div class="space-y-4">${typeFields.map(f => `<div><label class="input-label">${f.label}</label>${f.type === 'select' ? `<select id="edit_${f.key}" ${f.readonly ? 'disabled' : ''}><option value="">--</option>${f.options.map(o => `<option value="${o}" ${item[f.key] === o ? 'selected' : ''}>${o}</option>`).join('')}</select>` : f.type === 'textarea' ? `<textarea id="edit_${f.key}" rows="3" ${f.readonly ? 'readonly' : ''}>${escapeHtml(item[f.key] || '')}</textarea>` : `<input type="${f.type}" id="edit_${f.key}" value="${escapeHtml(item[f.key] || '')}" ${f.readonly ? 'readonly' : ''}>`}</div>`).join('')}</div>${kontaktBlock}<div class="flex justify-end gap-2 mt-6"><button onclick="closeModal()" class="btn btn-outline">Abbrechen</button><button onclick="saveEdit()" class="btn btn-primary">💾 Speichern</button></div></div></div>`;
     }
-    
+
+    // ============================================
+    // KONTAKT-EDITOR: beliebig viele Mails, Nummern, Adressen
+    // ============================================
+    function renderKontaktEditor(item) {
+      const mails = Array.isArray(item.emails) ? item.emails : [];
+      const tele = Array.isArray(item.telefone) ? item.telefone : [];
+      const adr = Array.isArray(item.adressen) ? item.adressen : [];
+      const opt = (typen, gewaehlt) => typen.map(t => `<option value="${t}" ${t === gewaehlt ? 'selected' : ''}>${t}</option>`).join('');
+      const loeschen = (art, i) => `<button type="button" onclick="kontaktEntfernen('${art}', ${i})" class="btn btn-outline btn-sm" title="Entfernen">🗑️</button>`;
+
+      const mailZeilen = mails.map((e, i) => `<div class="flex gap-2 mb-2 items-center"><select id="k_mail_typ_${i}" style="max-width:130px">${opt(MAIL_TYPEN, e.typ)}</select><input type="email" id="k_mail_wert_${i}" value="${escapeHtml(e.wert || '')}" placeholder="name@beispiel.ch" class="flex-1">${loeschen('emails', i)}</div>`).join('');
+      const telZeilen = tele.map((t, i) => `<div class="flex gap-2 mb-2 items-center"><select id="k_tel_typ_${i}" style="max-width:130px">${opt(TEL_TYPEN, t.typ)}</select><input type="tel" id="k_tel_wert_${i}" value="${escapeHtml(t.wert || '')}" placeholder="+41 79 000 00 00" class="flex-1">${loeschen('telefone', i)}</div>`).join('');
+      const adrZeilen = adr.map((a, i) => `<div class="border rounded-lg p-3 mb-2"><div class="flex gap-2 mb-2 items-center"><select id="k_adr_typ_${i}" style="max-width:130px">${opt(ADR_TYPEN, a.typ)}</select><div class="flex-1"></div>${loeschen('adressen', i)}</div><div class="grid grid-cols-6 gap-2"><div class="col-span-3"><label class="input-label">Strasse</label><input type="text" id="k_adr_strasse_${i}" value="${escapeHtml(a.strasse || '')}"></div><div><label class="input-label">Nr.</label><input type="text" id="k_adr_hausnummer_${i}" value="${escapeHtml(a.hausnummer || '')}"></div><div><label class="input-label">PLZ</label><input type="text" id="k_adr_plz_${i}" value="${escapeHtml(a.plz || '')}"></div><div><label class="input-label">Ort</label><input type="text" id="k_adr_ort_${i}" value="${escapeHtml(a.ort || '')}"></div><div class="col-span-2"><label class="input-label">Land</label><input type="text" id="k_adr_land_${i}" value="${escapeHtml(a.land || 'Schweiz')}"></div></div></div>`).join('');
+
+      const leer = (txt) => `<div class="text-sm text-gray-400 mb-2">${txt}</div>`;
+      return `<div class="mt-6 pt-4 border-t space-y-5">
+        <div><div class="flex justify-between items-center mb-2"><label class="input-label mb-0">E-Mail-Adressen</label><button type="button" onclick="kontaktHinzufuegen('emails')" class="btn btn-outline btn-sm">➕ E-Mail</button></div>${mailZeilen || leer('Noch keine E-Mail-Adresse erfasst.')}</div>
+        <div><div class="flex justify-between items-center mb-2"><label class="input-label mb-0">Telefonnummern</label><button type="button" onclick="kontaktHinzufuegen('telefone')" class="btn btn-outline btn-sm">➕ Telefon</button></div>${telZeilen || leer('Noch keine Telefonnummer erfasst.')}</div>
+        <div><div class="flex justify-between items-center mb-2"><label class="input-label mb-0">Adressen</label><button type="button" onclick="kontaktHinzufuegen('adressen')" class="btn btn-outline btn-sm">➕ Adresse</button></div>${adrZeilen || leer('Noch keine Adresse erfasst.')}</div>
+        <div class="text-xs text-gray-400">Der oberste Eintrag gilt als Hauptangabe und wird für Cloud-Sync, Serienbriefe und den N!NA-Export verwendet.</div>
+      </div>`;
+    }
+
+    // Liest den aktuellen Stand des Dialogs zurueck in state.editingItem,
+    // damit beim Neuzeichnen nichts verloren geht.
+    function harvestKontakte() {
+      const it = state.editingItem;
+      if (!it) return;
+      document.querySelectorAll('[id^="edit_"]').forEach(el => { it[el.id.replace('edit_', '')] = el.value; });
+      const lese = (praefix, felder) => {
+        const out = [];
+        for (let i = 0; ; i++) {
+          if (!document.getElementById(`${praefix}_${felder[0]}_${i}`)) break;
+          const obj = {};
+          felder.forEach(f => { const el = document.getElementById(`${praefix}_${f}_${i}`); obj[f] = el ? el.value : ''; });
+          out.push(obj);
+        }
+        return out;
+      };
+      it.emails = lese('k_mail', ['typ', 'wert']);
+      it.telefone = lese('k_tel', ['typ', 'wert']);
+      it.adressen = lese('k_adr', ['typ', 'strasse', 'hausnummer', 'plz', 'ort', 'land']);
+    }
+
+    function kontaktHinzufuegen(art) {
+      harvestKontakte();
+      const it = state.editingItem;
+      if (!it) return;
+      if (!Array.isArray(it[art])) it[art] = [];
+      if (art === 'adressen') it[art].push({ typ: it[art].length ? 'Arbeit' : 'Privat', strasse: '', hausnummer: '', plz: '', ort: '', land: 'Schweiz' });
+      else if (art === 'telefone') it[art].push({ typ: it[art].length ? 'Weitere' : 'Mobil', wert: '' });
+      else it[art].push({ typ: it[art].length ? 'Arbeit' : 'Privat', wert: '' });
+      renderModal();
+    }
+
+    function kontaktEntfernen(art, idx) {
+      harvestKontakte();
+      const it = state.editingItem;
+      if (!it || !Array.isArray(it[art])) return;
+      it[art].splice(idx, 1);
+      renderModal();
+    }
+
     function renderImportModal() {
-      const config = { probedaten: { title: 'Probedaten importieren', fields: ['datum', 'wochentag', 'anfangszeit', 'endzeit', 'artDerProbe', 'ort', 'anmerkungen'] }, ensemble: { title: 'Ensemble importieren', fields: ['name', 'email', 'telefon', 'funktion', 'bemerkungen', 'strasse', 'hausnummer', 'plz', 'ort', 'land'] }, team: { title: 'Künstl. Team importieren', fields: ['name', 'email', 'telefon', 'funktion', 'bemerkungen', 'strasse', 'hausnummer', 'plz', 'ort', 'land'] }, teamVerfuegbarkeit: { title: 'Team-Verfügbarkeit importieren', fields: ['teammitglied', 'datum', 'anfangszeit', 'endzeit', 'bemerkungen'] }, figuren: { title: 'Figuren importieren', fields: ['figur', 'kurzbeschreibung'] }, zuordnungen: { title: 'Zuordnungen importieren', fields: ['figur', 'schauspieler'] }, szenen: { title: 'Szenen importieren', fields: ['szene', 'nummer', 'beschreibung', 'hauptfiguren', 'nebenfiguren'] }, absenzen: { title: 'Absenzen importieren', fields: ['schauspieler', 'datum', 'anfangszeit', 'endzeit', 'bemerkungen'] } };
+      const config = { probedaten: { title: 'Probedaten importieren', fields: ['datum', 'wochentag', 'anfangszeit', 'endzeit', 'artDerProbe', 'ort', 'anmerkungen'] }, ensemble: { title: 'Ensemble importieren', fields: ['name', 'email', 'telefon', 'funktion', 'bemerkungen', 'strasse', 'hausnummer', 'plz', 'ort', 'land', 'Weitere E-Mails', 'Weitere Telefone', 'Weitere Adressen'] }, team: { title: 'Künstl. Team importieren', fields: ['name', 'email', 'telefon', 'funktion', 'bemerkungen', 'strasse', 'hausnummer', 'plz', 'ort', 'land', 'Weitere E-Mails', 'Weitere Telefone', 'Weitere Adressen'] }, teamVerfuegbarkeit: { title: 'Team-Verfügbarkeit importieren', fields: ['teammitglied', 'datum', 'anfangszeit', 'endzeit', 'bemerkungen'] }, figuren: { title: 'Figuren importieren', fields: ['figur', 'kurzbeschreibung'] }, zuordnungen: { title: 'Zuordnungen importieren', fields: ['figur', 'schauspieler'] }, szenen: { title: 'Szenen importieren', fields: ['szene', 'nummer', 'beschreibung', 'hauptfiguren', 'nebenfiguren'] }, absenzen: { title: 'Absenzen importieren', fields: ['schauspieler', 'datum', 'anfangszeit', 'endzeit', 'bemerkungen'] } };
       const c = config[state.showImportModal];
       return `<div class="modal" onclick="if(event.target===this) closeModal()"><div class="modal-content p-6"><div class="flex justify-between items-center mb-4"><h3 class="text-lg font-semibold">📥 ${c.title}</h3><button onclick="closeModal()" class="text-gray-400 hover:text-gray-600 text-xl">&times;</button></div><div class="import-zone mb-4" id="importDropZone"><div class="text-4xl mb-2">📄</div><p class="text-gray-600 mb-2">CSV oder Excel-Datei hier ablegen</p><label class="btn btn-primary mt-2 cursor-pointer">Datei auswählen<input type="file" accept=".csv,.xlsx,.xls" onchange="handleImportFile(this, '${state.showImportModal}')" class="hidden"></label></div><div class="bg-gray-50 rounded-lg p-4 text-sm"><div class="font-semibold mb-2">Erwartete Spalten:</div><div class="flex flex-wrap gap-2">${c.fields.map(f => `<span class="tag tag-blue">${f}</span>`).join('')}</div></div><div id="importPreview" class="mt-4 hidden"><div class="font-semibold mb-2">Vorschau:</div><div class="max-h-48 overflow-auto border rounded" id="importPreviewTable"></div><div class="mt-3 flex justify-end gap-2"><button onclick="closeModal()" class="btn btn-outline">Abbrechen</button><button onclick="confirmImport()" class="btn btn-success" id="confirmImportBtn">Importieren</button></div></div></div></div>`;
     }
@@ -1298,6 +1503,17 @@
         const item = { id: row.id || genId() }; 
         Object.keys(row).forEach(key => { if (key !== 'id') item[key] = row[key]; }); 
         if (pendingImportType === 'szenen' && row.szene && !row.name) item.name = row.szene; 
+        if (pendingImportType === 'ensemble' || pendingImportType === 'team') {
+          const wm = row.weitereemails || row.weiteremails || row.weitere_mails || '';
+          const wt = row.weiteretelefone || row.weiteretelefonnummern || row.weitere_telefone || '';
+          const wa = row.weitereadressen || row.weitere_adressen || '';
+          ['weitereemails', 'weiteremails', 'weitere_mails', 'weiteretelefone', 'weiteretelefonnummern', 'weitere_telefone', 'weitereadressen', 'weitere_adressen'].forEach(k => { delete item[k]; });
+          normalizePerson(item);
+          item.emails = item.emails.concat(parseWeitereKontakte(wm, 'Weitere'));
+          item.telefone = item.telefone.concat(parseWeitereKontakte(wt, 'Weitere'));
+          item.adressen = item.adressen.concat(parseWeitereAdressen(wa));
+          normalizePerson(item);
+        } 
         if (pendingImportType === 'figuren' && !row.figur && row.name) item.figur = row.name; 
         return item; 
       }); 
@@ -1485,7 +1701,7 @@
     }
     function closeModal() { state.showImportModal = null; state.editingItem = null; state.editingType = null; pendingImportData = null; pendingImportType = null; render(); }
     function showImportModal(type) { state.showImportModal = type; render(); }
-    function editItem(id, type) { const keyMap = { probedaten: KEYS.probedaten, ensemble: KEYS.ensemble, kuenstlerischesTeam: KEYS.kuenstlerischesTeam, teamVerfuegbarkeit: KEYS.teamVerfuegbarkeit, figuren: KEYS.figuren, zuordnungen: KEYS.zuordnungen, szenen: KEYS.szenen, absenzen: KEYS.absenzen }; const data = getData(keyMap[type]); const item = data.find(d => d.id === id); if (item) { if (false) { /* Sicherung entfernt */ } state.editingItem = { ...item }; state.editingType = type; render(); } }
+    function editItem(id, type) { const keyMap = { probedaten: KEYS.probedaten, ensemble: KEYS.ensemble, kuenstlerischesTeam: KEYS.kuenstlerischesTeam, teamVerfuegbarkeit: KEYS.teamVerfuegbarkeit, figuren: KEYS.figuren, zuordnungen: KEYS.zuordnungen, szenen: KEYS.szenen, absenzen: KEYS.absenzen }; const data = getData(keyMap[type]); const item = data.find(d => d.id === id); if (item) { if (false) { /* Sicherung entfernt */ } const kopie = JSON.parse(JSON.stringify(item)); state.editingItem = (type === 'ensemble' || type === 'kuenstlerischesTeam') ? scalarInArrays(kopie) : kopie; state.editingType = type; render(); } }
     async function saveEdit() { 
       if (!state.editingItem || !state.editingType) return; 
       const keyMap = { probedaten: KEYS.probedaten, ensemble: KEYS.ensemble, kuenstlerischesTeam: KEYS.kuenstlerischesTeam, teamVerfuegbarkeit: KEYS.teamVerfuegbarkeit, figuren: KEYS.figuren, zuordnungen: KEYS.zuordnungen, szenen: KEYS.szenen, absenzen: KEYS.absenzen }; 
@@ -1496,6 +1712,13 @@
           const key = el.id.replace('edit_', ''); 
           data[idx][key] = el.value; 
         }); 
+        if (state.editingType === 'ensemble' || state.editingType === 'kuenstlerischesTeam') {
+          harvestKontakte();
+          data[idx].emails = state.editingItem.emails || [];
+          data[idx].telefone = state.editingItem.telefone || [];
+          data[idx].adressen = state.editingItem.adressen || [];
+          normalizePerson(data[idx]);
+        }
         if (state.editingType === 'probedaten' && data[idx].datum) { 
           data[idx].wochentag = getWochentag(data[idx].datum); 
         } 
@@ -1696,7 +1919,7 @@
 
     function renderEnsemble() {
       const data = getData(KEYS.ensemble);
-      return `<div class="fade-in"><div class="card p-4 mb-4"><div class="grid grid-cols-6 gap-3 mb-3"><div><label class="input-label">Name *</label><input type="text" id="ens_name"></div><div><label class="input-label">Funktion</label><input type="text" id="ens_funktion" value="Schauspiel"></div><div><label class="input-label">E-Mail</label><input type="email" id="ens_email"></div><div><label class="input-label">Telefon</label><input type="tel" id="ens_telefon"></div><div><label class="input-label">Bemerkungen</label><input type="text" id="ens_bemerkungen"></div><div class="flex items-end"><button onclick="toggleEnsembleAddress()" class="btn btn-outline btn-sm w-full">📍 Adresse</button></div></div><div id="ensembleAddressFields" class="hidden grid grid-cols-6 gap-3 mb-3 pt-3 border-t"><div><label class="input-label">Strasse</label><input type="text" id="ens_strasse"></div><div><label class="input-label">Nr.</label><input type="text" id="ens_hausnummer"></div><div><label class="input-label">PLZ</label><input type="text" id="ens_plz"></div><div><label class="input-label">Ort</label><input type="text" id="ens_ort_addr"></div><div><label class="input-label">Land</label><input type="text" id="ens_land" value="Schweiz"></div><div></div></div><button onclick="addEnsemble()" class="btn btn-primary">➕ Hinzufügen</button></div><div class="flex justify-between items-center mb-3"><span class="text-sm text-gray-500">${data.length} Ensemble-Mitglieder</span><div class="flex gap-2"><button onclick="showImportModal('ensemble')" class="btn btn-outline btn-sm">📥 Import</button><button onclick="exportStyledExcel('ensemble')" class="btn btn-outline btn-sm">📤 Export</button></div></div><div class="card"><div class="table-wrap"><table><thead><tr><th>Name</th><th>Funktion</th><th>E-Mail</th><th>Telefon</th><th>Ort</th><th>Aktionen</th></tr></thead><tbody>${data.length === 0 ? '<tr><td colspan="6" class="text-center text-gray-400 py-8">Kein Ensemble</td></tr>' : data.map(row => `<tr><td class="font-medium">${escapeHtml(row.name)}</td><td>${escapeHtml(row.funktion || '')}</td><td class="text-sm">${escapeHtml(row.email || '')}</td><td class="text-sm">${escapeHtml(row.telefon || '')}</td><td class="text-sm">${row.plz ? `${row.plz} ${row.ort || ''}` : ''}</td><td><span class="edit-btn" onclick="editItem('${row.id}', 'ensemble')">✏️</span><span class="delete-btn" onclick="deleteRow('${row.id}', 'ensemble')">🗑️</span></td></tr>`).join('')}</tbody></table></div></div></div>`;
+      return `<div class="fade-in"><div class="card p-4 mb-4"><div class="grid grid-cols-6 gap-3 mb-3"><div><label class="input-label">Name *</label><input type="text" id="ens_name"></div><div><label class="input-label">Funktion</label><input type="text" id="ens_funktion" value="Schauspiel"></div><div><label class="input-label">E-Mail</label><input type="email" id="ens_email"></div><div><label class="input-label">Telefon</label><input type="tel" id="ens_telefon"></div><div><label class="input-label">Bemerkungen</label><input type="text" id="ens_bemerkungen"></div><div class="flex items-end"><button onclick="toggleEnsembleAddress()" class="btn btn-outline btn-sm w-full">📍 Adresse</button></div></div><div id="ensembleAddressFields" class="hidden grid grid-cols-6 gap-3 mb-3 pt-3 border-t"><div><label class="input-label">Strasse</label><input type="text" id="ens_strasse"></div><div><label class="input-label">Nr.</label><input type="text" id="ens_hausnummer"></div><div><label class="input-label">PLZ</label><input type="text" id="ens_plz"></div><div><label class="input-label">Ort</label><input type="text" id="ens_ort_addr"></div><div><label class="input-label">Land</label><input type="text" id="ens_land" value="Schweiz"></div><div></div></div><button onclick="addEnsemble()" class="btn btn-primary">➕ Hinzufügen</button></div><div class="flex justify-between items-center mb-3"><span class="text-sm text-gray-500">${data.length} Ensemble-Mitglieder</span><div class="flex gap-2"><button onclick="showImportModal('ensemble')" class="btn btn-outline btn-sm">📥 Import</button><button onclick="exportStyledExcel('ensemble')" class="btn btn-outline btn-sm">📤 Export</button></div></div><div class="card"><div class="table-wrap"><table><thead><tr><th>Name</th><th>Funktion</th><th>E-Mail</th><th>Telefon</th><th>Ort</th><th>Aktionen</th></tr></thead><tbody>${data.length === 0 ? '<tr><td colspan="6" class="text-center text-gray-400 py-8">Kein Ensemble</td></tr>' : data.map(row => `<tr><td class="font-medium">${escapeHtml(row.name)}</td><td>${escapeHtml(row.funktion || '')}</td><td class="text-sm">${kontaktZelle(row.emails, row.email)}</td><td class="text-sm">${kontaktZelle(row.telefone, row.telefon)}</td><td class="text-sm">${adressZelle(row)}</td><td><span class="edit-btn" onclick="editItem('${row.id}', 'ensemble')">✏️</span><span class="delete-btn" onclick="deleteRow('${row.id}', 'ensemble')">🗑️</span></td></tr>`).join('')}</tbody></table></div></div></div>`;
     }
     function toggleEnsembleAddress() { document.getElementById('ensembleAddressFields')?.classList.toggle('hidden'); }
     async function addEnsemble() { 
@@ -1715,6 +1938,7 @@
         ort: document.getElementById('ens_ort_addr')?.value || '', 
         land: document.getElementById('ens_land')?.value || 'Schweiz' 
       };
+      normalizePerson(newItem);
       const data = getData(KEYS.ensemble); 
       data.push(newItem); 
       setData(KEYS.ensemble, data); 
@@ -1748,7 +1972,7 @@
 
     function renderTeam() {
       const data = getData(KEYS.kuenstlerischesTeam);
-      return `<div class="fade-in"><div class="card p-4 mb-4"><div class="grid grid-cols-6 gap-3 mb-3"><div><label class="input-label">Name *</label><input type="text" id="team_name"></div><div><label class="input-label">Funktion</label><select id="team_funktion"><option value="">--</option>${TEAM_FUNKTIONEN.map(f => `<option value="${f}">${f}</option>`).join('')}</select></div><div><label class="input-label">E-Mail</label><input type="email" id="team_email"></div><div><label class="input-label">Telefon</label><input type="tel" id="team_telefon"></div><div><label class="input-label">Bemerkungen</label><input type="text" id="team_bemerkungen"></div><div class="flex items-end"><button onclick="toggleTeamAddress()" class="btn btn-outline btn-sm w-full">📍 Adresse</button></div></div><div id="teamAddressFields" class="hidden grid grid-cols-6 gap-3 mb-3 pt-3 border-t"><div><label class="input-label">Strasse</label><input type="text" id="team_strasse"></div><div><label class="input-label">Nr.</label><input type="text" id="team_hausnummer"></div><div><label class="input-label">PLZ</label><input type="text" id="team_plz"></div><div><label class="input-label">Ort</label><input type="text" id="team_ort_addr"></div><div><label class="input-label">Land</label><input type="text" id="team_land" value="Schweiz"></div><div></div></div><button onclick="addTeam()" class="btn btn-primary">➕ Hinzufügen</button></div><div class="flex justify-between items-center mb-3"><span class="text-sm text-gray-500">${data.length} Team-Mitglieder</span><div class="flex gap-2"><button onclick="showImportModal('team')" class="btn btn-outline btn-sm">📥 Import</button><button onclick="exportStyledExcel('team')" class="btn btn-outline btn-sm">📤 Export</button></div></div><div class="card"><div class="table-wrap"><table><thead><tr><th>Name</th><th>Funktion</th><th>E-Mail</th><th>Telefon</th><th>Ort</th><th>Aktionen</th></tr></thead><tbody>${data.length === 0 ? '<tr><td colspan="6" class="text-center text-gray-400 py-8">Kein Team</td></tr>' : data.map(row => `<tr><td class="font-medium">${escapeHtml(row.name)}</td><td><span class="tag tag-purple">${escapeHtml(row.funktion || '')}</span></td><td class="text-sm">${escapeHtml(row.email || '')}</td><td class="text-sm">${escapeHtml(row.telefon || '')}</td><td class="text-sm">${row.plz ? `${row.plz} ${row.ort || ''}` : ''}</td><td><span class="edit-btn" onclick="editItem('${row.id}', 'kuenstlerischesTeam')">✏️</span><span class="delete-btn" onclick="deleteRow('${row.id}', 'kuenstlerischesTeam')">🗑️</span></td></tr>`).join('')}</tbody></table></div></div></div>`;
+      return `<div class="fade-in"><div class="card p-4 mb-4"><div class="grid grid-cols-6 gap-3 mb-3"><div><label class="input-label">Name *</label><input type="text" id="team_name"></div><div><label class="input-label">Funktion</label><select id="team_funktion"><option value="">--</option>${TEAM_FUNKTIONEN.map(f => `<option value="${f}">${f}</option>`).join('')}</select></div><div><label class="input-label">E-Mail</label><input type="email" id="team_email"></div><div><label class="input-label">Telefon</label><input type="tel" id="team_telefon"></div><div><label class="input-label">Bemerkungen</label><input type="text" id="team_bemerkungen"></div><div class="flex items-end"><button onclick="toggleTeamAddress()" class="btn btn-outline btn-sm w-full">📍 Adresse</button></div></div><div id="teamAddressFields" class="hidden grid grid-cols-6 gap-3 mb-3 pt-3 border-t"><div><label class="input-label">Strasse</label><input type="text" id="team_strasse"></div><div><label class="input-label">Nr.</label><input type="text" id="team_hausnummer"></div><div><label class="input-label">PLZ</label><input type="text" id="team_plz"></div><div><label class="input-label">Ort</label><input type="text" id="team_ort_addr"></div><div><label class="input-label">Land</label><input type="text" id="team_land" value="Schweiz"></div><div></div></div><button onclick="addTeam()" class="btn btn-primary">➕ Hinzufügen</button></div><div class="flex justify-between items-center mb-3"><span class="text-sm text-gray-500">${data.length} Team-Mitglieder</span><div class="flex gap-2"><button onclick="showImportModal('team')" class="btn btn-outline btn-sm">📥 Import</button><button onclick="exportStyledExcel('team')" class="btn btn-outline btn-sm">📤 Export</button></div></div><div class="card"><div class="table-wrap"><table><thead><tr><th>Name</th><th>Funktion</th><th>E-Mail</th><th>Telefon</th><th>Ort</th><th>Aktionen</th></tr></thead><tbody>${data.length === 0 ? '<tr><td colspan="6" class="text-center text-gray-400 py-8">Kein Team</td></tr>' : data.map(row => `<tr><td class="font-medium">${escapeHtml(row.name)}</td><td><span class="tag tag-purple">${escapeHtml(row.funktion || '')}</span></td><td class="text-sm">${kontaktZelle(row.emails, row.email)}</td><td class="text-sm">${kontaktZelle(row.telefone, row.telefon)}</td><td class="text-sm">${adressZelle(row)}</td><td><span class="edit-btn" onclick="editItem('${row.id}', 'kuenstlerischesTeam')">✏️</span><span class="delete-btn" onclick="deleteRow('${row.id}', 'kuenstlerischesTeam')">🗑️</span></td></tr>`).join('')}</tbody></table></div></div></div>`;
     }
     function toggleTeamAddress() { document.getElementById('teamAddressFields')?.classList.toggle('hidden'); }
     async function addTeam() { 
@@ -1767,6 +1991,7 @@
         ort: document.getElementById('team_ort_addr')?.value || '', 
         land: document.getElementById('team_land')?.value || 'Schweiz' 
       };
+      normalizePerson(newItem);
       const data = getData(KEYS.kuenstlerischesTeam); 
       data.push(newItem); 
       setData(KEYS.kuenstlerischesTeam, data); 
@@ -3057,7 +3282,7 @@
       const p = { id: genId(), name: data.projectInfo?.name || 'Import', premiere: data.projectInfo?.premiere || '', regie: data.projectInfo?.regie || '', spielstaette: data.projectInfo?.spielstaette || '', createdAt: new Date().toISOString() };
       state.projekte.push(p); save(KEYS.projekte, state.projekte);
       const imp = (key, arr) => { if (arr?.length) save(key(p.id), arr.map(i => ({ ...i, id: i.id || genId() }))); };
-      imp(KEYS.probedaten, normalizeProbeDates(data.probedaten)); imp(KEYS.ensemble, data.ensemble); imp(KEYS.kuenstlerischesTeam, data.kuenstlerischesTeam || data.team); imp(KEYS.teamVerfuegbarkeit, data.teamVerfuegbarkeit); imp(KEYS.figuren, data.figuren); imp(KEYS.zuordnungen, data.zuordnungen); imp(KEYS.szenen, data.szenen); imp(KEYS.absenzen, data.absenzen); imp(KEYS.probenplanung, data.probenplanung); imp(KEYS.szenenbloecke, data.szenenbloecke);
+      imp(KEYS.probedaten, normalizeProbeDates(data.probedaten)); imp(KEYS.ensemble, normalizePersons(data.ensemble)); imp(KEYS.kuenstlerischesTeam, normalizePersons(data.kuenstlerischesTeam || data.team)); imp(KEYS.teamVerfuegbarkeit, data.teamVerfuegbarkeit); imp(KEYS.figuren, data.figuren); imp(KEYS.zuordnungen, data.zuordnungen); imp(KEYS.szenen, data.szenen); imp(KEYS.absenzen, data.absenzen); imp(KEYS.probenplanung, data.probenplanung); imp(KEYS.szenenbloecke, data.szenenbloecke);
       selectProjekt(p.id); alert('✓ Import OK!');
     }
     function importBackup(input) {
@@ -3658,12 +3883,13 @@
           mergeField('ensemble', existing, 'telefon', person.phone, 'Telefon', pLabel);
           mergeField('ensemble', existing, 'funktion', person.function || person.role, 'Funktion', pLabel);
           mergeAddress('ensemble', existing, person, pLabel);
+          scalarInArrays(existing);
           continue;
         }
 
         const newId = genId();
         personIdMap[person.id] = newId;
-        newEnsemble.push({
+        newEnsemble.push(ninaKontakteUebernehmen({
           id: newId, _ninaId: person.id || null, name: person.name || '',
           email: person.email || '', telefon: person.phone || '',
           funktion: person.function || person.role || 'Schauspiel',
@@ -3672,7 +3898,7 @@
           hausnummer: person.address?.number || '',
           plz: person.address?.zip || '',
           ort: person.address?.city || ''
-        });
+        }, person));
         importedEnsemble++;
       }
       if (ensemblePersons.length > 0) save(KEYS.ensemble(projektId), newEnsemble);
@@ -3695,12 +3921,13 @@
           mergeField('team', existing, 'telefon', person.phone, 'Telefon', pLabel);
           mergeField('team', existing, 'funktion', person.function || person.role, 'Funktion', pLabel);
           mergeAddress('team', existing, person, pLabel);
+          scalarInArrays(existing);
           continue;
         }
 
         const newId = genId();
         personIdMap[person.id] = newId;
-        newTeam.push({
+        newTeam.push(ninaKontakteUebernehmen({
           id: newId, _ninaId: person.id || null, name: person.name || '',
           email: person.email || '', telefon: person.phone || '',
           funktion: person.function || person.role || '',
@@ -3709,7 +3936,7 @@
           hausnummer: person.address?.number || '',
           plz: person.address?.zip || '',
           ort: person.address?.city || ''
-        });
+        }, person));
         importedTeam++;
       }
       if (teamPersons.length > 0) save(KEYS.kuenstlerischesTeam(projektId), newTeam);
@@ -3872,7 +4099,7 @@
       const probenplanung = load(KEYS.probenplanung(projektId), []);
       const exportPerson = (person, category) => {
         const base = { id: person.id, name: person.name || '', role: person.funktion || '', function: person.funktion || '', category, notes: person.bemerkungen || '' };
-        if (includeContacts) { base.email = person.email || ''; base.phone = person.telefon || ''; base.address = { street: person.strasse || '', number: person.hausnummer || '', zip: person.plz || '', city: person.ort || '' }; }
+        if (includeContacts) { base.email = person.email || ''; base.phone = person.telefon || ''; base.address = { street: person.strasse || '', number: person.hausnummer || '', zip: person.plz || '', city: person.ort || '' }; Object.assign(base, exportKontaktArrays(person)); }
         return base;
       };
       return {
@@ -3941,6 +4168,7 @@
             zip: person.plz || '',
             city: person.ort || ''
           };
+          Object.assign(base, exportKontaktArrays(person));
         }
         return base;
       };
@@ -4178,7 +4406,7 @@
       let wsData = [], headers = [];
       switch (type) {
         case 'probedaten': headers = ['Datum', 'Wochentag', 'Von', 'Bis', 'Art', 'Ort', 'Anmerkungen']; wsData = [headers, ...data.map(d => [formatDatum(d.datum), getWochentag(d.datum), d.anfangszeit || '', d.endzeit || '', d.artDerProbe || '', d.ort || '', d.anmerkungen || ''])]; break;
-        case 'ensemble': case 'team': headers = ['Name', 'Funktion', 'E-Mail', 'Telefon', 'Strasse', 'Nr.', 'PLZ', 'Ort', 'Land', 'Bemerkungen']; wsData = [headers, ...data.map(d => [d.name || '', d.funktion || '', d.email || '', d.telefon || '', d.strasse || '', d.hausnummer || '', d.plz || '', d.ort || '', d.land || '', d.bemerkungen || ''])]; break;
+        case 'ensemble': case 'team': headers = ['Name', 'Funktion', 'E-Mail', 'Telefon', 'Strasse', 'Nr.', 'PLZ', 'Ort', 'Land', 'Bemerkungen', 'Weitere E-Mails', 'Weitere Telefone', 'Weitere Adressen']; wsData = [headers, ...data.map(d => [d.name || '', d.funktion || '', d.email || '', d.telefon || '', d.strasse || '', d.hausnummer || '', d.plz || '', d.ort || '', d.land || '', d.bemerkungen || '', weitereMails(d), weitereTelefone(d), weitereAdressen(d)])]; break;
         case 'teamVerfuegbarkeit': headers = ['Teammitglied', 'Datum', 'Von', 'Bis', 'Bemerkungen']; wsData = [headers, ...data.map(d => [d.teammitglied || '', formatDatum(d.datum), d.anfangszeit || '', d.endzeit || '', d.bemerkungen || ''])]; break;
         case 'figuren': headers = ['Figur', 'Kurzbeschreibung']; wsData = [headers, ...data.map(d => [d.figur || d.name || '', d.kurzbeschreibung || ''])]; break;
         case 'zuordnungen': headers = ['Figur', 'Schauspieler:in']; wsData = [headers, ...data.map(d => [d.figur || '', d.schauspieler || ''])]; break;
@@ -4210,7 +4438,17 @@
       }
     }
     
+    // Migration: Einzelfelder fuer E-Mail/Telefon/Adresse in Listen ueberfuehren
+    function migrateKontaktdaten() {
+      try {
+        const projekte = Array.isArray(state.projekte) ? state.projekte : [];
+        projekte.forEach(p => normalisiereProjektPersonen(p.id));
+        if (state.projekt && !projekte.some(p => p.id === state.projekt.id)) normalisiereProjektPersonen(state.projekt.id);
+      } catch (e) { console.warn('Kontakt-Migration uebersprungen:', e); }
+    }
+
     // Initial migration
+    migrateKontaktdaten();
     if (state.projekt) {
       migrateProbenplanung(); migrateUnlock();
       
