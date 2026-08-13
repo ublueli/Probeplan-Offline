@@ -279,25 +279,29 @@
     const weitereTelefone = (p) => (p.telefone || []).slice(1).map(t => t.typ + ': ' + t.wert).join('; ');
     const weitereAdressen = (p) => (p.adressen || []).slice(1).map(a => a.typ + ': ' + adresseEinzeilig(a)).join('; ');
 
+    // Alle Werte untereinander; die Typbezeichnung erscheint nur, wenn es
+    // mehr als einen Eintrag gibt.
     function kontaktZelle(liste, primaer) {
       const arr = Array.isArray(liste) ? liste : [];
-      const wert = arr.length ? arr[0].wert : (primaer || '');
-      if (!wert) return '';
-      const rest = arr.slice(1);
-      if (!rest.length) return escapeHtml(wert);
-      const titel = escapeHtml(rest.map(x => x.typ + ': ' + x.wert).join(' | '));
-      return escapeHtml(wert) + ' <span class="tag tag-blue" title="' + titel + '">+' + rest.length + '</span>';
+      if (!arr.length) return primaer ? escapeHtml(primaer) : '';
+      const mitTyp = arr.length > 1;
+      return arr.map((x, i) => '<div class="' + (i ? 'mt-1' : '') + '">'
+        + (mitTyp ? '<span class="text-xs text-gray-400 mr-1">' + escapeHtml(x.typ || '') + '</span>' : '')
+        + escapeHtml(x.wert || '') + '</div>').join('');
     }
     function adressZelle(row) {
       const arr = Array.isArray(row.adressen) ? row.adressen : [];
-      const erste = arr.length ? arr[0] : ((row.plz || row.ort) ? { plz: row.plz, ort: row.ort } : null);
-      if (!erste) return '';
-      const text = escapeHtml([erste.plz, erste.ort].filter(Boolean).join(' '));
-      const rest = arr.slice(1);
-      if (!rest.length) return text;
-      const titel = escapeHtml(rest.map(a => a.typ + ': ' + adresseEinzeilig(a)).join(' | '));
-      return text + ' <span class="tag tag-blue" title="' + titel + '">+' + rest.length + '</span>';
+      if (!arr.length) return escapeHtml([row.plz, row.ort].filter(Boolean).join(' '));
+      const mitTyp = arr.length > 1;
+      return arr.map((a, i) => '<div class="' + (i ? 'mt-1' : '') + '">'
+        + (mitTyp ? '<span class="text-xs text-gray-400 mr-1">' + escapeHtml(a.typ || '') + '</span>' : '')
+        + escapeHtml([a.plz, a.ort].filter(Boolean).join(' ')) + '</div>').join('');
     }
+
+    // Excel: alle Werte in einer Zelle, je Zeile ein Eintrag
+    const alleMails = (p) => (p.emails || []).map(e => ((p.emails.length > 1 ? e.typ + ': ' : '') + e.wert)).join('\n') || (p.email || '');
+    const alleTelefone = (p) => (p.telefone || []).map(t => ((p.telefone.length > 1 ? t.typ + ': ' : '') + t.wert)).join('\n') || (p.telefon || '');
+    const alleAdressen = (p) => (p.adressen || []).map(a => ((p.adressen.length > 1 ? a.typ + ': ' : '') + adresseEinzeilig(a))).join('\n');
 
     // Excel-/CSV-Import: "Privat: a@b.ch; Arbeit: c@d.ch"
     function parseWeitereKontakte(text, standardTyp) {
@@ -1435,7 +1439,7 @@
         <div><div class="flex justify-between items-center mb-2"><label class="input-label mb-0">E-Mail-Adressen</label><button type="button" onclick="kontaktHinzufuegen('emails')" class="btn btn-outline btn-sm">➕ E-Mail</button></div>${mailZeilen || leer('Noch keine E-Mail-Adresse erfasst.')}</div>
         <div><div class="flex justify-between items-center mb-2"><label class="input-label mb-0">Telefonnummern</label><button type="button" onclick="kontaktHinzufuegen('telefone')" class="btn btn-outline btn-sm">➕ Telefon</button></div>${telZeilen || leer('Noch keine Telefonnummer erfasst.')}</div>
         <div><div class="flex justify-between items-center mb-2"><label class="input-label mb-0">Adressen</label><button type="button" onclick="kontaktHinzufuegen('adressen')" class="btn btn-outline btn-sm">➕ Adresse</button></div>${adrZeilen || leer('Noch keine Adresse erfasst.')}</div>
-        <div class="text-xs text-gray-400">Der oberste Eintrag gilt als Hauptangabe und wird für Cloud-Sync, Serienbriefe und den N!NA-Export verwendet.</div>
+        <div class="text-xs text-gray-400">Der oberste Eintrag gilt als Hauptangabe. Alle Einträge erscheinen in der Tabelle und im Excel-Export.</div>
       </div>`;
     }
 
@@ -1506,8 +1510,8 @@
         if (pendingImportType === 'ensemble' || pendingImportType === 'team') {
           const wm = row.weitereemails || row.weiteremails || row.weitere_mails || '';
           const wt = row.weiteretelefone || row.weiteretelefonnummern || row.weitere_telefone || '';
-          const wa = row.weitereadressen || row.weitere_adressen || '';
-          ['weitereemails', 'weiteremails', 'weitere_mails', 'weiteretelefone', 'weiteretelefonnummern', 'weitere_telefone', 'weitereadressen', 'weitere_adressen'].forEach(k => { delete item[k]; });
+          const wa = row.weitereadressen || row.weitere_adressen || row.alleadressen || '';
+          ['weitereemails', 'weiteremails', 'weitere_mails', 'weiteretelefone', 'weiteretelefonnummern', 'weitere_telefone', 'weitereadressen', 'weitere_adressen', 'alleadressen'].forEach(k => { delete item[k]; });
           normalizePerson(item);
           item.emails = item.emails.concat(parseWeitereKontakte(wm, 'Weitere'));
           item.telefone = item.telefone.concat(parseWeitereKontakte(wt, 'Weitere'));
@@ -4406,7 +4410,7 @@
       let wsData = [], headers = [];
       switch (type) {
         case 'probedaten': headers = ['Datum', 'Wochentag', 'Von', 'Bis', 'Art', 'Ort', 'Anmerkungen']; wsData = [headers, ...data.map(d => [formatDatum(d.datum), getWochentag(d.datum), d.anfangszeit || '', d.endzeit || '', d.artDerProbe || '', d.ort || '', d.anmerkungen || ''])]; break;
-        case 'ensemble': case 'team': headers = ['Name', 'Funktion', 'E-Mail', 'Telefon', 'Strasse', 'Nr.', 'PLZ', 'Ort', 'Land', 'Bemerkungen', 'Weitere E-Mails', 'Weitere Telefone', 'Weitere Adressen']; wsData = [headers, ...data.map(d => [d.name || '', d.funktion || '', d.email || '', d.telefon || '', d.strasse || '', d.hausnummer || '', d.plz || '', d.ort || '', d.land || '', d.bemerkungen || '', weitereMails(d), weitereTelefone(d), weitereAdressen(d)])]; break;
+        case 'ensemble': case 'team': headers = ['Name', 'Funktion', 'E-Mail', 'Telefon', 'Strasse', 'Nr.', 'PLZ', 'Ort', 'Land', 'Alle Adressen', 'Bemerkungen']; wsData = [headers, ...data.map(d => [d.name || '', d.funktion || '', alleMails(d), alleTelefone(d), d.strasse || '', d.hausnummer || '', d.plz || '', d.ort || '', d.land || '', alleAdressen(d), d.bemerkungen || ''])]; break;
         case 'teamVerfuegbarkeit': headers = ['Teammitglied', 'Datum', 'Von', 'Bis', 'Bemerkungen']; wsData = [headers, ...data.map(d => [d.teammitglied || '', formatDatum(d.datum), d.anfangszeit || '', d.endzeit || '', d.bemerkungen || ''])]; break;
         case 'figuren': headers = ['Figur', 'Kurzbeschreibung']; wsData = [headers, ...data.map(d => [d.figur || d.name || '', d.kurzbeschreibung || ''])]; break;
         case 'zuordnungen': headers = ['Figur', 'Schauspieler:in']; wsData = [headers, ...data.map(d => [d.figur || '', d.schauspieler || ''])]; break;
@@ -4414,7 +4418,19 @@
         case 'absenzen': headers = ['Person', 'Datum', 'Wochentag', 'Von', 'Bis', 'Bemerkungen']; wsData = [headers, ...data.map(d => [d.schauspieler || '', formatDatum(d.datum), getWochentag(d.datum), d.anfangszeit || '', d.endzeit || '', d.bemerkungen || ''])]; break;
       }
       const ws = XLSX.utils.aoa_to_sheet(wsData);
-      ws['!cols'] = headers.map(() => ({ wch: 18 }));
+      ws['!cols'] = headers.map(h => ({ wch: h === 'Alle Adressen' ? 34 : (h === 'E-Mail' ? 30 : 18) }));
+      if (type === 'ensemble' || type === 'team') {
+        // Mehrzeilige Zellen sichtbar machen und Zeilenhoehe mitwachsen lassen
+        const maxZeilen = wsData.map(z => Math.max(1, ...z.map(c => String(c || '').split('\n').length)));
+        ws['!rows'] = maxZeilen.map(n => ({ hpt: 15 * n }));
+        for (let r = 0; r < wsData.length; r++) {
+          for (let c = 0; c < headers.length; c++) {
+            const adr = XLSX.utils.encode_cell({ r, c });
+            if (!ws[adr]) continue;
+            ws[adr].s = Object.assign({}, ws[adr].s, { alignment: { wrapText: true, vertical: 'top' } });
+          }
+        }
+      }
       XLSX.utils.book_append_sheet(wb, ws, type);
       XLSX.writeFile(wb, `nina_${type}_${new Date().toISOString().split('T')[0]}.xlsx`);
     }
