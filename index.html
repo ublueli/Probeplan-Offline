@@ -148,7 +148,13 @@
     // ============================================
     // N!NA STORAGE KEYS
     // ============================================
-    const STORAGE_PREFIX = 'nina_';
+    // Eigener Namensraum: Propla, Rebu und Dramera laufen auf derselben Web-Adresse
+    // (ublueli.github.io) und teilen sich darum den Browser-Speicher. Mit dem gemeinsamen
+    // Präfix «nina_» hat Propla Rebus Projektliste und Rebus Zeiger aufs aktuelle Projekt
+    // überschrieben – Rebu konnte danach nicht mehr speichern. Darum ab jetzt «propla_»,
+    // mit einmaliger Übernahme der alten Daten (siehe proplaMigration unten).
+    const STORAGE_PREFIX = 'propla_';
+    const ALT_PREFIX = 'nina_';
     const KEYS = {
       projekte: STORAGE_PREFIX + 'projekte',
       aktuellesProjekt: STORAGE_PREFIX + 'aktuelles_projekt',
@@ -191,6 +197,42 @@
     // ============================================
     const save = (key, data) => localStorage.setItem(key, JSON.stringify(data));
     const load = (key, def = null) => { try { return JSON.parse(localStorage.getItem(key)) || def; } catch { return def; } };
+
+    // Einmalige Übernahme der alten «nina_»-Daten in den eigenen Namensraum.
+    // Propla-Projekte erkennt man an «createdAt» (Rebu-Einträge haben «erstellt»).
+    // Es wird kopiert, nicht verschoben – nur die Propla-Einträge werden aus der
+    // gemeinsamen Projektliste und dem gemeinsamen Zeiger entfernt, damit Rebu aufräumt.
+    (function proplaMigration() {
+      try {
+        if (localStorage.getItem(STORAGE_PREFIX + 'migriert')) return;
+        const altListe = load(ALT_PREFIX + 'projekte', []);
+        const meine = altListe.filter(p => p && p.id && ('createdAt' in p) && !('erstellt' in p));
+        const fremde = altListe.filter(p => !(p && p.id && ('createdAt' in p) && !('erstellt' in p)));
+        if (meine.length) {
+          const neuListe = load(KEYS.projekte, []);
+          meine.forEach(p => { if (!neuListe.some(q => q.id === p.id)) neuListe.push(p); });
+          save(KEYS.projekte, neuListe);
+          const teile = ['settings', 'probedaten', 'team', 'team_verfuegbarkeit', 'ensemble', 'figuren', 'zuordnungen', 'szenen', 'absenzen', 'probenplanung', 'szenenbloecke'];
+          meine.forEach(p => {
+            teile.forEach(t => {
+              const alt = localStorage.getItem(ALT_PREFIX + t + '_' + p.id);
+              if (alt !== null && localStorage.getItem(STORAGE_PREFIX + t + '_' + p.id) === null) localStorage.setItem(STORAGE_PREFIX + t + '_' + p.id, alt);
+            });
+          });
+          // Gemeinsame Liste bereinigen: nur noch die fremden (Rebu-)Einträge bleiben
+          save(ALT_PREFIX + 'projekte', fremde);
+        }
+        const altAktuell = load(ALT_PREFIX + 'aktuelles_projekt', null);
+        if (altAktuell && typeof altAktuell === 'object' && ('createdAt' in altAktuell)) {
+          if (!load(KEYS.aktuellesProjekt, null)) save(KEYS.aktuellesProjekt, altAktuell);
+          // Rebus Zeiger auf ein Rebu-Projekt zurückstellen (das zuletzt angelegte)
+          const rebuRest = fremde.length ? fremde : load(ALT_PREFIX + 'projekte', []);
+          if (rebuRest.length) save(ALT_PREFIX + 'aktuelles_projekt', rebuRest[rebuRest.length - 1].id);
+          else localStorage.removeItem(ALT_PREFIX + 'aktuelles_projekt');
+        }
+        localStorage.setItem(STORAGE_PREFIX + 'migriert', new Date().toISOString());
+      } catch (e) { console.warn('Propla-Migration:', e); }
+    })();
     const genId = () => 'id_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9);
 
     // ============================================
@@ -2999,7 +3041,7 @@
       return `<div class="fade-in max-w-2xl mx-auto"><div class="card p-6 mb-6"><div class="flex items-center gap-4 mb-4"><div class="text-4xl">ℹ️</div><div><h3 class="text-lg font-semibold">N!NA-Propla v3.0</h3><p class="text-sm text-gray-500">Probeplaner mit Team-Verfügbarkeit</p></div></div></div>${state.projekt ? `<div class="card p-6 mb-6"><h3 class="text-lg font-semibold mb-4">⚙️ Projekteinstellungen</h3><div class="space-y-4"><div><label class="input-label">Projektname</label><input type="text" value="${escapeHtml(state.projekt.name)}" onchange="updateProjekt('name', this.value)"></div><div class="grid grid-cols-2 gap-4"><div><label class="input-label">Regie</label><input type="text" value="${escapeHtml(state.projekt.regie || '')}" onchange="updateProjekt('regie', this.value)"></div><div><label class="input-label">Premiere</label><input type="date" value="${state.projekt.premiere || ''}" onchange="updateProjekt('premiere', this.value)"></div></div></div></div>` : ''}<div class="card p-6 border-red-200 bg-red-50"><h3 class="text-lg font-semibold text-red-800 mb-4">🗑️ Gefahrenzone</h3><button onclick="clearAllData()" class="btn btn-danger">Alle Daten löschen</button></div></div>`;
     }
     function updateProjekt(field, value) { if (!state.projekt) return; state.projekt[field] = value; const idx = state.projekte.findIndex(p => p.id === state.projekt.id); if (idx !== -1) { state.projekte[idx] = { ...state.projekt }; save(KEYS.projekte, state.projekte); } save(KEYS.aktuellesProjekt, state.projekt); render(); }
-    function clearAllData() { if (!confirm('⚠️ Alle Daten löschen?')) return; Object.keys(localStorage).forEach(key => { if (key.startsWith('nina_')) localStorage.removeItem(key); }); state.projekte = []; state.projekt = null; render(); }
+    function clearAllData() { if (!confirm('⚠️ Alle Daten löschen?')) return; Object.keys(localStorage).forEach(key => { if (key.startsWith(STORAGE_PREFIX)) localStorage.removeItem(key); }); state.projekte = []; state.projekt = null; render(); }
 
     // ============================================
     // HELPERS
@@ -3217,7 +3259,7 @@
       migrateProbenplanung(); migrateUnlock();
       render(); 
     }
-    function deleteProjekt(id) { if (!confirm('Löschen?')) return; state.projekte = state.projekte.filter(p => p.id !== id); save(KEYS.projekte, state.projekte); if (state.projekt?.id === id) { state.projekt = null; save(KEYS.aktuellesProjekt, null); } Object.keys(localStorage).forEach(key => { if (key.includes(id)) localStorage.removeItem(key); }); render(); }
+    function deleteProjekt(id) { if (!confirm('Löschen?')) return; state.projekte = state.projekte.filter(p => p.id !== id); save(KEYS.projekte, state.projekte); if (state.projekt?.id === id) { state.projekt = null; save(KEYS.aktuellesProjekt, null); } Object.keys(localStorage).forEach(key => { if (key.startsWith(STORAGE_PREFIX) && key.includes(id)) localStorage.removeItem(key); }); render(); }
     async function deleteRow(id, type) { 
       const keyMap = { probedaten: KEYS.probedaten, kuenstlerischesTeam: KEYS.kuenstlerischesTeam, teamVerfuegbarkeit: KEYS.teamVerfuegbarkeit, ensemble: KEYS.ensemble, figuren: KEYS.figuren, zuordnungen: KEYS.zuordnungen, szenen: KEYS.szenen, absenzen: KEYS.absenzen }; 
       // Read-only-Schutz
