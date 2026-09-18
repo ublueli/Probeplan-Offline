@@ -1747,7 +1747,7 @@
     }
     function closeModal() { state.showImportModal = null; state.editingItem = null; state.editingType = null; pendingImportData = null; pendingImportType = null; render(); }
     function showImportModal(type) { state.showImportModal = type; render(); }
-    function editItem(id, type) { const keyMap = { probedaten: KEYS.probedaten, ensemble: KEYS.ensemble, kuenstlerischesTeam: KEYS.kuenstlerischesTeam, teamVerfuegbarkeit: KEYS.teamVerfuegbarkeit, figuren: KEYS.figuren, zuordnungen: KEYS.zuordnungen, szenen: KEYS.szenen, absenzen: KEYS.absenzen }; const data = getData(keyMap[type]); const item = data.find(d => d.id === id); if (item) { if (false) { /* Sicherung entfernt */ } const kopie = JSON.parse(JSON.stringify(item)); state.editingItem = (type === 'ensemble' || type === 'kuenstlerischesTeam') ? scalarInArrays(kopie) : kopie; state.editingType = type; render(); } }
+    function editItem(id, type) { const keyMap = { probedaten: KEYS.probedaten, ensemble: KEYS.ensemble, kuenstlerischesTeam: KEYS.kuenstlerischesTeam, teamVerfuegbarkeit: KEYS.teamVerfuegbarkeit, figuren: KEYS.figuren, zuordnungen: KEYS.zuordnungen, szenen: KEYS.szenen, absenzen: KEYS.absenzen }; const data = getData(keyMap[type]); const item = data.find(d => String(d.id) === String(id)); if (item) { if (false) { /* Sicherung entfernt */ } const kopie = JSON.parse(JSON.stringify(item)); state.editingItem = (type === 'ensemble' || type === 'kuenstlerischesTeam') ? scalarInArrays(kopie) : kopie; state.editingType = type; render(); } }
     async function saveEdit() { 
       if (!state.editingItem || !state.editingType) return; 
       const keyMap = { probedaten: KEYS.probedaten, ensemble: KEYS.ensemble, kuenstlerischesTeam: KEYS.kuenstlerischesTeam, teamVerfuegbarkeit: KEYS.teamVerfuegbarkeit, figuren: KEYS.figuren, zuordnungen: KEYS.zuordnungen, szenen: KEYS.szenen, absenzen: KEYS.absenzen }; 
@@ -3267,10 +3267,15 @@
       const checkItem = checkData.find(d => d.id === id);
       if (false) { /* Sicherung entfernt */ }
       if (!confirm('Eintrag wirklich löschen?')) return;
-      // Item VOR dem Löschen holen für Bereinigung
+      // Item VOR dem Löschen holen für Bereinigung.
+      // IDs als Text vergleichen: ältere Einträge tragen Zahlen-IDs, der Knopf
+      // übergibt aber immer Text – ein strenger Vergleich (===) fand darum nichts.
+      // Es wird genau EIN Eintrag entfernt (falls eine ID doppelt vorkommt).
       const allData = getData(keyMap[type]);
-      const deletedItem = allData.find(d => d.id === id);
-      let data = allData.filter(d => d.id !== id); 
+      const idx = allData.findIndex(d => String(d.id) === String(id));
+      if (idx === -1) { alert('Eintrag nicht gefunden – bitte Seite neu laden.'); return; }
+      const deletedItem = allData[idx];
+      let data = allData.slice(); data.splice(idx, 1);
       setData(keyMap[type], data);
       
       // Cloud Sync - Löschen
@@ -3319,7 +3324,7 @@
       }
       if (type === 'probedaten') {
         // Probenplanung für gelöschte Probe entfernen
-        let probenplanung = getData(KEYS.probenplanung).filter(p => p.probeId !== id);
+        let probenplanung = getData(KEYS.probenplanung).filter(p => String(p.probeId) !== String(id));
         setData(KEYS.probenplanung, probenplanung);
       }
       render(); 
@@ -4481,8 +4486,27 @@
     // INIT
     // ============================================
     
+    // Migration: Probedaten-IDs zu Text machen (ältere Einträge tragen Zahlen-IDs,
+    // was Löschen/Bearbeiten über den Knopf verhinderte) und doppelte IDs auflösen.
+    function migrateProbedatenIds() {
+      if (!state.projekt) return;
+      const key = KEYS.probedaten(state.projekt.id);
+      const data = load(key, []);
+      if (!data.length) return;
+      let geaendert = false;
+      const gesehen = new Set();
+      data.forEach(p => {
+        if (p.id == null || p.id === '') { p.id = genId(); geaendert = true; }
+        else if (typeof p.id !== 'string') { p.id = String(p.id); geaendert = true; }
+        if (gesehen.has(p.id)) { p.id = genId(); geaendert = true; }
+        gesehen.add(p.id);
+      });
+      if (geaendert) { save(key, data); console.log('Probedaten-IDs bereinigt'); }
+    }
+
     // Migration: Konvertiere alle probeIds zu Strings
     function migrateProbenplanung() {
+      migrateProbedatenIds();
       if (!state.projekt) return;
       const key = KEYS.probenplanung(state.projekt.id);
       const data = load(key, []);
